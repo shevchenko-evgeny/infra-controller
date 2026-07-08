@@ -11,6 +11,7 @@
 | 0.3 | 05/11/2026 | Binu Ramakrishnan | DPU agent / FMDS optional HTTP sign proxy (`[machine-identity]` `sign-proxy-url`, `sign-proxy-tls-root-ca`); `FmdsMachineIdentityConfig` in FMDS config push |
 | 0.4 | 05/11/2026 | Binu Ramakrishnan | Signing key rotation (two slots), overlap policy on rotate only |
 | 0.5 | 06/02/2026 | Binu Ramakrishnan | Site master encryption key re-wrap (`ReencryptTenantIdentitySecrets` gRPC); envelope `key_id` in ciphertext (drop DB `encryption_key_id` column) |
+| 0.6 | 07/08/2026 | Parham Armani | Expose re-wrap via NICo-rest (`POST .../tenant-identity/reencrypt`, provider-admin), keeping `dryRun`; previously gRPC/Forge-Admin-CLI only |
 |  |  |  |  |
 
 # **1\. Introduction**
@@ -107,10 +108,10 @@ Each of these flows are discussed below.
 
 ## **3.1 Per-tenant Identity Configuration and Signing Key Provisioning**
 
-Per-org signing keys are created when an admin first configures machine identity for an org via `PUT identity/config` (SetTenantIdentityConfiguration).
+Per-org signing keys are created when an admin first configures machine identity for an org via `PUT tenant-identity/config` (SetTenantIdentityConfiguration).
 
 ```
-SetTenantIdentityConfiguration (PUT identity/config)
+SetTenantIdentityConfiguration (PUT tenant-identity/config)
               │
               ▼
 ┌───────────────────────────────┐
@@ -419,7 +420,7 @@ Global config provides:
   * optional **`trust_domain_allowlist`**: when non-empty, each org’s configured JWT `issuer` must resolve to a trust domain (registered host) that matches at least one pattern; patterns are validated at startup
   * optional **`token_endpoint_domain_allowlist`**: when non-empty, the org’s token delegation `token_endpoint` must be `http://` or `https://` with a host that matches at least one pattern; patterns are validated at startup
   
-All identity settings (`issuer`, `defaultAudience`, `allowedAudiences`, `tokenTtlSec`, `subjectPrefix` etc.) are **per-org only** and are set when calling PUT identity/config. There is no global fallback for those fields. **`subjectPrefix` is optional:** if omitted, the site controller derives `spiffe://<trust-domain-from-issuer>` from `issuer` (root SPIFFE ID form, no path or trailing slash). Other fields such as `issuer` and `tokenTtlSec` remain required by the API within documented bounds. Per-org `enabled` can further disable an org when global is true (default `true` when unset).
+All identity settings (`issuer`, `defaultAudience`, `allowedAudiences`, `tokenTtlSec`, `subjectPrefix` etc.) are **per-org only** and are set when calling PUT tenant-identity/config. There is no global fallback for those fields. **`subjectPrefix` is optional:** if omitted, the site controller derives `spiffe://<trust-domain-from-issuer>` from `issuer` (root SPIFFE ID form, no path or trailing slash). Other fields such as `issuer` and `tokenTtlSec` remain required by the API within documented bounds. Per-org `enabled` can further disable an org when global is true (default `true` when unset).
 
 **PUT prerequisite:** Per-org config can only be created or updated when global `enabled` is `true`; otherwise PUT returns `503 Service Unavailable`.
 
@@ -433,15 +434,15 @@ When the `[machine_identity]` section exists but is incomplete or invalid, the f
 | :------- | :------- |
 | Section missing | Feature disabled. Server starts. No machine identity operations available. |
 | Section exists, invalid or incomplete | Server fails to start. Prevents partial or broken state. |
-| Section exists, valid, `enabled` = false | Feature disabled. PUT identity/config returns `503`. |
+| Section exists, valid, `enabled` = false | Feature disabled. PUT tenant-identity/config returns `503`. |
 | Section exists, valid, `enabled` = true | Feature operational. |
 
 **Runtime behavior when global config is incomplete (e.g. config changed after startup):**
 
 | Operation | Behavior |
 | :-------- | :------- |
-| PUT identity/config | Reject with `503 Service Unavailable`. Same as when global is disabled. |
-| GET identity/config | Return `503` when global config is invalid or missing required fields. |
+| PUT tenant-identity/config | Reject with `503 Service Unavailable`. Same as when global is disabled. |
+| GET tenant-identity/config | Return `503` when global config is invalid or missing required fields. |
 | SignMachineIdentity | Return error (e.g. `UNAVAILABLE`). Do not issue tokens. |
 
 ### **3.4.4 JWT-SVID Token Format**
@@ -549,13 +550,13 @@ These APIs manage per-org identity configuration that controls how NICo issues J
 **PUT when global is disabled:** If the global `enabled` setting in site config is `false`, PUT returns `503 Service Unavailable` with a message indicating that machine identity must be enabled at the site level first. This enforces the deployment order: global config must be enabled before per-org config can be created or updated.
 
 ```bash
-PUT identity/config
-GET identity/config
-DELETE identity/config
+PUT tenant-identity/config
+GET tenant-identity/config
+DELETE tenant-identity/config
 ```
 
 ```
-PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/identity/config
+PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/tenant-identity/config
 ```
 
 ```json
@@ -634,18 +635,24 @@ Response:
 
 `signingKeys` lists **published** public keys (metadata only). Exactly one object has **`currentSigner`: true**. During rotation overlap, the **inactive** key may include **`expireAt`** (proto: `expire_at`) — end of the JWKS overlap window. With a single active key, only one object is returned and **`expireAt`** is omitted.
 
-##### **Site master encryption key re-wrap (gRPC only)**
+##### **Site master encryption key re-wrap**
 
 Site operators use this admin RPC after changing **`current_encryption_key_id`** to re-wrap existing ciphertext in `tenant_identity_config` with the new master key. It does **not** rotate per-org JWT signing keys (use **`rotateKey`** on Set identity config for that).
 
-**Auth:** Forge Admin CLI (internal RBAC); not exposed via NICo-rest.
+**Surfaces:** Two entry points, both mapping to the same **`Forge.ReencryptTenantIdentitySecrets`** gRPC:
+- **NICo-rest:** `POST /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/reencrypt` — for provider admins using a bearer token / `nicocli`.
+- **Forge Admin CLI (gRPC/mTLS):** direct call for internal operators.
 
-**Scope:** If **`organization_id`** is set, only that org (must exist). If omitted, all rows in `tenant_identity_config` are examined in stable order.
+**Auth:** The NICo-rest endpoint requires the **provider-admin** role (validated by NICo-rest before dispatching to the site); the direct gRPC path uses Forge Admin CLI internal RBAC. This is a site-wide administrative operation, **not** a per-tenant call — it is deliberately gated to provider admins rather than tenant admins.
 
-**Dry run:** When **`dry_run`** is **`true`**, decrypt and validate only; **no DB writes**. Counters still reflect what would change.
+**Scope:** If **`organizationId`** is set, only that org (must exist). If omitted, all rows in `tenant_identity_config` are examined in stable order. (The re-wrap target key comes from the running site API config, not the request; `organizationId` selects *which* rows, not the key.)
+
+**Dry run:** When **`dryRun`** is **`true`**, decrypt and validate only; **no DB writes**. Counters still reflect what would change. `dryRun` is exposed on both surfaces so operators can preview blast radius and confirm `rowsFailed == 0` before applying a bulk re-wrap of secret material (see the runbook's dry-run → apply → verify flow).
 
 ```bash
-# gRPC (Forge service)
+# NICo-rest (provider-admin)
+POST /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/reencrypt
+# gRPC (Forge service; Forge Admin CLI)
 Forge.ReencryptTenantIdentitySecrets
 ```
 
@@ -702,23 +709,23 @@ These APIs let NICo tenants register a token exchange callback endpoint (RFC 869
 
 | Setting | Scope | Effect on token delegation |
 | :------ | :---- | :------------------------- |
-| `enabled` | Global | Master switch. If false, PUT token-delegation is rejected (same as identity/config). |
+| `enabled` | Global | Master switch. If false, PUT token-delegation is rejected (same as tenant-identity/config). |
 | `token_endpoint_http_proxy` | Global | Outbound calls from NICo to the tenant's token endpoint use this proxy (SSRF mitigation). |
 | Identity config (issuer, audiences, **`tokenTtlSec`**) | Per-org (with global defaults) | The subject JWT sent to the exchange server is signed using the org's effective identity config. Its **`exp` − `iat` equals `tokenTtlSec`** (same knob as directly issued tokens). The **outbound** token response `expires_in` comes from the tenant STS, not from NICo. |
 | Token delegation config | Per-org | Each org registers its own `tokenEndpoint`, `subjectTokenAudience`, and auth method via oneof (`clientSecretBasic`, etc.). |
 
-**PUT token-delegation prerequisites:** Same as PUT identity/config, global `enabled` must be `true` and global config must be complete. If not, PUT returns `503 Service Unavailable`. Token delegation also requires org identity config to exist (the JWT sent to the exchange is built from it); if the org has no identity config, PUT token-delegation returns `404` or `503`.
+**PUT token-delegation prerequisites:** Same as PUT tenant-identity/config, global `enabled` must be `true` and global config must be complete. If not, PUT returns `503 Service Unavailable`. Token delegation also requires org identity config to exist (the JWT sent to the exchange is built from it); if the org has no identity config, PUT token-delegation returns `404` or `503`.
 
 ```bash
-PUT identity/token-delegation
-GET identity/token-delegation
-DELETE identity/token-delegation
+PUT tenant-identity/token-delegation
+GET tenant-identity/token-delegation
+DELETE tenant-identity/token-delegation
 ```
 
 Request:
 
 ```bash
-PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/identity/token-delegation
+PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/tenant-identity/token-delegation
 {
   "tokenEndpoint": "https://auth.acme.com/oauth2/token",
   "clientSecretBasic": {
@@ -757,7 +764,7 @@ Possible ([openid client auth](https://openid.net/specs/openid-connect-core-1_0.
 
 #### **3.5.1.3 Token Exchange Request**
 
-Make a request to the `token_endpoint` registered via the `identity/token-delegation` API.
+Make a request to the `token_endpoint` registered via the `tenant-identity/token-delegation` API.
 
 **Request**:
 
@@ -1075,13 +1082,13 @@ service NICo {
 | `GET /v2/org/{org-id}/nico/site/{site-id}/.well-known/jwks.json` | `NICo.GetJWKS` | Fetch JSON Web Key Set (public, unauthenticated) |
 | `GET /v2/org/{org-id}/nico/site/{site-id}/.well-known/spiffe/jwks.json` | `NICo.GetJWKS` (`kind=Spiffe`) | Fetch SPIFFE-style JWKS (public, unauthenticated) |
 | `GET /v2/org/{org-id}/nico/site/{site-id}/.well-known/openid-configuration` | `NICo.GetOpenIDConfiguration` | Fetch OpenID Connect config (public, unauthenticated) |
-| `GET /v2/org/{org-id}/nico/site/{site-id}/identity/config` | `NICo.GetTenantIdentityConfiguration` | Retrieve identity configuration |
-| `PUT /v2/org/{org-id}/nico/site/{site-id}/identity/config` | `NICo.SetTenantIdentityConfiguration` | Create or replace identity configuration |
-| `DELETE /v2/org/{org-id}/nico/site/{site-id}/identity/config` | `NICo.DeleteTenantIdentityConfiguration` | Delete identity configuration |
-| `GET /v2/org/{org-id}/nico/site/{site-id}/identity/token-delegation` | `NICo.GetTokenDelegation` | Retrieve token delegation config |
-| `PUT /v2/org/{org-id}/nico/site/{site-id}/identity/token-delegation` | `NICo.SetTokenDelegation` | Create or replace token delegation |
-| `DELETE /v2/org/{org-id}/nico/site/{site-id}/identity/token-delegation` | `NICo.DeleteTokenDelegation` | Delete token delegation |
-| _(gRPC only; Forge Admin CLI)_ | `Forge.ReencryptTenantIdentitySecrets` | Re-wrap tenant identity ciphertext with site **`current_encryption_key_id`** (§3.1.1) |
+| `GET /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/config` | `NICo.GetTenantIdentityConfiguration` | Retrieve identity configuration. **Tenant-admin.** |
+| `PUT /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/config` | `NICo.SetTenantIdentityConfiguration` | Create or replace identity configuration. **Tenant-admin.** |
+| `DELETE /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/config` | `NICo.DeleteTenantIdentityConfiguration` | Delete identity configuration. **Tenant-admin.** |
+| `GET /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/token-delegation` | `NICo.GetTokenDelegation` | Retrieve token delegation config. **Tenant-admin.** |
+| `PUT /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/token-delegation` | `NICo.SetTokenDelegation` | Create or replace token delegation. **Tenant-admin.** |
+| `DELETE /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/token-delegation` | `NICo.DeleteTokenDelegation` | Delete token delegation. **Tenant-admin.** |
+| `POST /v2/org/{org-id}/nico/site/{site-id}/tenant-identity/reencrypt` | `Forge.ReencryptTenantIdentitySecrets` | Re-wrap tenant identity ciphertext with site **`current_encryption_key_id`** (§3.1.1). **Provider-admin only.** Also invokable directly as a Forge Admin CLI gRPC call. |
 
 ### **3.5.2.2 Error Handling**
 

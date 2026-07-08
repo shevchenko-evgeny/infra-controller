@@ -27,6 +27,21 @@ func GetTenantIdentityActivityOptions() workflow.ActivityOptions {
 	}
 }
 
+// GetTenantIdentityReencryptActivityOptions are the activity options for the KEK-rotation
+// reencrypt workflow. The all-orgs DB walk can be slow, so it uses a larger StartToCloseTimeout
+// than GetTenantIdentityActivityOptions.
+func GetTenantIdentityReencryptActivityOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    1 * time.Second,
+			BackoffCoefficient: 2.0,
+			MaximumInterval:    10 * time.Second,
+			MaximumAttempts:    2,
+		},
+	}
+}
+
 // CreateOrUpdateTenantIdentityConfiguration is a workflow to create or update Tenant Identity Config using the CreateOrUpdateTenantIdentityConfigurationOnSite activity
 func CreateOrUpdateTenantIdentityConfiguration(ctx workflow.Context, request *corev1.SetTenantIdentityConfigRequest) (*corev1.TenantIdentityConfigResponse, error) {
 	logger := log.With().Str("Workflow", "CreateOrUpdateTenantIdentityConfiguration").Logger()
@@ -164,6 +179,25 @@ func GetOpenIDConfiguration(ctx workflow.Context, request *corev1.OpenIdConfigRe
 	var response corev1.OpenIdConfiguration
 	if err := workflow.ExecuteActivity(ctx, manager.GetOpenIDConfigurationFromSite, request).Get(ctx, &response); err != nil {
 		logger.Error().Err(err).Str("Activity", "GetOpenIDConfigurationFromSite").Msg("Failed to execute activity from workflow")
+		return nil, err
+	}
+
+	logger.Info().Msg("Completing workflow")
+	return &response, nil
+}
+
+// ReencryptTenantIdentitySecrets is a workflow to re-wrap Tenant Identity secrets with the site's
+// current master encryption key (KEK rotation) using the ReencryptTenantIdentitySecretsOnSite activity
+func ReencryptTenantIdentitySecrets(ctx workflow.Context, request *corev1.ReencryptTenantIdentitySecretsRequest) (*corev1.ReencryptTenantIdentitySecretsResponse, error) {
+	logger := log.With().Str("Workflow", "ReencryptTenantIdentitySecrets").Logger()
+	logger.Info().Msg("Starting workflow")
+
+	ctx = workflow.WithActivityOptions(ctx, GetTenantIdentityReencryptActivityOptions())
+
+	var manager activity.ManageTenantIdentity
+	var response corev1.ReencryptTenantIdentitySecretsResponse
+	if err := workflow.ExecuteActivity(ctx, manager.ReencryptTenantIdentitySecretsOnSite, request).Get(ctx, &response); err != nil {
+		logger.Error().Err(err).Str("Activity", "ReencryptTenantIdentitySecretsOnSite").Msg("Failed to execute activity from workflow")
 		return nil, err
 	}
 

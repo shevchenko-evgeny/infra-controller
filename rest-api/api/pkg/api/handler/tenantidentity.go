@@ -1019,3 +1019,139 @@ func (goidch GetOpenIDConfigurationHandler) Handle(c echo.Context) error {
 	apiOpenIDConf.FromResponseProto(&protoResponse)
 	return c.JSON(http.StatusOK, apiOpenIDConf)
 }
+
+// ~~~~~ Reencrypt Secrets Handler ~~~~~ //
+
+// ReencryptTenantIdentitySecretsHandler handles POST /tenant-identity/reencrypt.
+type ReencryptTenantIdentitySecretsHandler struct {
+	dbSession  *cdb.Session
+	scp        *sc.ClientPool
+	tracerSpan *cutil.TracerSpan
+}
+
+// NewReencryptTenantIdentitySecretsHandler returns a new ReencryptTenantIdentitySecretsHandler.
+func NewReencryptTenantIdentitySecretsHandler(dbSession *cdb.Session, scp *sc.ClientPool) ReencryptTenantIdentitySecretsHandler {
+	return ReencryptTenantIdentitySecretsHandler{
+		dbSession:  dbSession,
+		scp:        scp,
+		tracerSpan: cutil.NewTracerSpan(),
+	}
+}
+
+// Handle godoc
+// @Summary Reencrypt Tenant Identity Secrets
+// @Description Re-wrap tenant_identity_config ciphertext with the site's current master encryption key (KEK rotation). Provider-admin scoped; omit organizationId to target all orgs.
+// @Tags TenantIdentity
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Param org path string true "Name of NGC organization"
+// @Param siteID path string true "ID of Site"
+// @Param message body model.APIReencryptTenantIdentitySecretsRequest true "Reencrypt Tenant Identity Secrets request"
+// @Success 200 {object} model.APIReencryptTenantIdentitySecretsResponse
+// @Failure 503 {object} util.APIError
+// @Router /v2/org/{org}/nico/site/{siteID}/tenant-identity/reencrypt [post]
+func (rtish ReencryptTenantIdentitySecretsHandler) Handle(c echo.Context) error {
+	org, dbUser, ctx, logger, handlerSpan := common.SetupHandler("TenantIdentity", "ReencryptSecrets", c, rtish.tracerSpan)
+	if handlerSpan != nil {
+		defer handlerSpan.End()
+	}
+	if dbUser == nil {
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve current user", nil)
+	}
+
+	siteID := c.Param("siteID")
+	if siteID == "" {
+		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Missing siteID path parameter", nil)
+	}
+
+	if ok, err := auth.ValidateOrgMembership(dbUser, org); !ok {
+		if err != nil {
+			logger.Error().Err(err).Msg("error validating org membership for User in request")
+		} else {
+			logger.Warn().Msg("could not validate org membership for user, access denied")
+		}
+		return cutil.NewAPIErrorResponse(c, http.StatusForbidden, fmt.Sprintf("Failed to validate membership for org: %s", org), nil)
+	}
+	if ok := auth.ValidateUserRoles(dbUser, org, nil, auth.ProviderAdminRole); !ok {
+		logger.Warn().Msg("user does not have Provider Admin role, access denied")
+		return cutil.NewAPIErrorResponse(c, http.StatusForbidden, "User does not have Provider Admin role with org", nil)
+	}
+
+	if _, err := common.GetTenantForOrg(ctx, nil, rtish.dbSession, org); err != nil {
+		if err == common.ErrOrgTenantNotFound {
+			return cutil.NewAPIErrorResponse(c, http.StatusNotFound, "Org does not have a Tenant associated", nil)
+		}
+		logger.Error().Err(err).Msg("error retrieving Tenant for this org")
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Tenant", nil)
+	}
+
+	site, err := common.GetSiteFromIDString(ctx, nil, siteID, rtish.dbSession)
+	if err != nil {
+		if errors.Is(err, cdb.ErrDoesNotExist) || errors.Is(err, common.ErrInvalidID) {
+			logger.Warn().Err(err).Str("Site ID", siteID).Msg("site not found in request")
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Could not find Site with ID specified in request data", nil)
+		}
+		logger.Error().Err(err).Str("Site ID", siteID).Msg("error retrieving Site from DB")
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Site due to DB error", nil)
+	}
+
+	temporalClient, err := rtish.scp.GetClientByID(site.ID)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to retrieve Temporal client for Site")
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve client for Site", nil)
+	}
+
+	apiRequest := model.APIReencryptTenantIdentitySecretsRequest{}
+	if err := c.Bind(&apiRequest); err != nil {
+		logger.Warn().Err(err).Msg("error binding request data into API model")
+		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Failed to parse request data, potentially invalid structure", nil)
+	}
+	if verr := apiRequest.Validate(); verr != nil {
+		logger.Warn().Err(verr).Msg("error validating Reencrypt Tenant Identity Secrets request data")
+		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Error validating Reencrypt Tenant Identity Secrets request data", verr)
+	}
+
+	protoRequest := apiRequest.ToProto()
+
+	hash, err := payloadHash(protoRequest)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to hash request payload for workflow ID")
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to hash request payload", nil)
+	}
+	workflowOptions := tclient.StartWorkflowOptions{
+		ID:                       "tenant-identity-reencrypt-" + org + "-" + site.ID.String() + "-" + hash,
+		WorkflowExecutionTimeout: cutil.WorkflowExecutionTimeout,
+		TaskQueue:                queue.SiteTaskQueue,
+		WorkflowIDConflictPolicy: temporalEnums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, cutil.WorkflowContextTimeout)
+	defer cancel()
+
+	we, err := temporalClient.ExecuteWorkflow(ctx, workflowOptions, "ReencryptTenantIdentitySecrets", protoRequest)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to synchronously start Temporal workflow to reencrypt Tenant Identity secrets")
+		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to start workflow to reencrypt Tenant Identity secrets", nil)
+	}
+
+	wid := we.GetID()
+	logger.Info().Str("Workflow ID", wid).Msg("executed synchronous reencrypt Tenant Identity secrets workflow")
+
+	var protoResponse corev1.ReencryptTenantIdentitySecretsResponse
+	err = we.Get(ctx, &protoResponse)
+	if err != nil {
+		var timeoutErr *tp.TimeoutError
+		if errors.As(err, &timeoutErr) || err == context.DeadlineExceeded || ctx.Err() != nil {
+			return common.TerminateWorkflowOnTimeOut(c, logger, temporalClient, wid, err, "TenantIdentity", "ReencryptTenantIdentitySecrets")
+		}
+
+		code, unwrapped := common.UnwrapWorkflowError(err)
+		logger.Error().Err(unwrapped).Msg("failed to synchronously execute Temporal workflow to reencrypt Tenant Identity secrets")
+		return cutil.NewAPIErrorResponse(c, code, "Failed to reencrypt Tenant Identity secrets", nil)
+	}
+
+	apiResponse := &model.APIReencryptTenantIdentitySecretsResponse{}
+	apiResponse.FromResponseProto(&protoResponse)
+	return c.JSON(http.StatusOK, apiResponse)
+}
