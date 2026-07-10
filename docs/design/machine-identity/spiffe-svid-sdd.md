@@ -110,7 +110,7 @@ Each of these flows are discussed below.
 
 Per-org signing keys are created when an admin first configures machine identity for an org via `PUT tenant-identity/config` (SetTenantIdentityConfiguration).
 
-```
+```text
 SetTenantIdentityConfiguration (PUT tenant-identity/config)
               │
               ▼
@@ -555,7 +555,7 @@ GET tenant-identity/config
 DELETE tenant-identity/config
 ```
 
-```
+```bash
 PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/tenant-identity/config
 ```
 
