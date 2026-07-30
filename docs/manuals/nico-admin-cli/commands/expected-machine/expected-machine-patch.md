@@ -18,6 +18,7 @@ update, preserves unprovided fields).
 \[**--rack-id**\] \[**--default_pause_ingestion_and_poweron**\]
 \[**--dpf-enabled**\] \[**--bmc-ip-address**\] \[**--extended**\]
 \[**--bmc-retain-credentials**\] \[**--dpu-policy**\]
+\[**--bmc-ip-allocation**\] \[**--interfaces**\]
 \[**--disable-lockdown**\] \[**--sort-by**\] \[**-h**\|**--help**\]
 
 ## DESCRIPTION
@@ -79,24 +80,24 @@ A RACK ID that will be added for the newly created Machine.
 **--default_pause_ingestion_and_poweron** *\<DEFAULT_PAUSE_INGESTION_AND_POWERON\>*  
 Optional flag to pause machines ingestion and power on. False - dont
 pause, true - will pause it. The actual mutable state is stored in
-explored_endpoints.\
+explored_endpoints.  
 
-\
+  
 *Possible values:*
 
-- true
-
-- false
+> -   true
+>
+> -   false
 
 **--dpf-enabled** *\<DPF_ENABLED\>*  
-DPF enable/disable for this machine. Default is updated as true.\
+DPF enable/disable for this machine. Default is updated as true.  
 
-\
+  
 *Possible values:*
 
-- true
-
-- false
+> -   true
+>
+> -   false
 
 **--bmc-ip-address** *\<BMC_IP_ADDRESS\>*  
 Static BMC IP (updates pre-allocated machine_interface when safe, same
@@ -111,54 +112,91 @@ internal UUIDs that are used to associate instances.
 
 **--bmc-retain-credentials** *\<BMC_RETAIN_CREDENTIALS\>*  
 When true, site-explorer skips BMC password rotation and stores
-factory-default credentials in Vault as-is\
+factory-default credentials in Vault as-is  
 
-\
+  
 *Possible values:*
 
-- true
+> -   true
+>
+> -   false
 
-- false
-
-**--dpu-policy** *\<DPU_POLICY\>*\
+**--dpu-policy** *\<DPU_POLICY\>*  
 Per-host DPU policy. \`manage\`: inherit the site policy, which defaults
 to managing DPUs; \`nic\`: configure DPU hardware as plain NICs;
 \`ignore\`: do not configure or attach DPU hardware. Unset preserves the
-existing per-host value. The previous \`use-as-nic\` value remains accepted
-as an alias. The legacy \`--dpu-mode\` flag also remains accepted:
-\`dpu-mode\` maps to \`manage\`, \`nic-mode\` to \`nic\`, and \`no-dpu\`
-to \`ignore\`.\
+existing per-host value. The previous \`use-as-nic\` value remains
+accepted as an alias. The legacy \`--dpu-mode\` flag also remains
+accepted: \`dpu-mode\` maps to \`manage\`, \`nic-mode\` to \`nic\`, and
+\`no-dpu\` to \`ignore\`.  
 
-\
+  
 *Possible values:*
 
-- manage
+> -   manage
+>
+> -   nic
+>
+> -   ignore
 
-- nic
+**--bmc-ip-allocation** *\<BMC_IP_ALLOCATION\>*  
+Per-host control over how this BMCs IP is assigned and retained.
+\`auto\` (default): infer from \`--bmc-ip-address\` -- a configured
+address is \`fixed\`, no address is \`retained\`; \`dynamic\`: a normal
+DHCP lease that may expire and change; \`fixed\`: the operator-specified
+\`--bmc-ip-address\` (static); \`retained\`: an auto-allocated DHCP
+address that stays static for the lifetime of its machine-interface
+record. Unset preserves the existing per-host value.  
 
-- ignore
+  
+*Possible values:*
+
+> -   unspecified
+>
+> -   auto
+>
+> -   dynamic
+>
+> -   fixed
+>
+> -   retained
+
+**--interfaces** *\<INTERFACES\>*  
+Interfaces as a JSON array of ExpectedInterface objects (fields:
+mac_address, role, ip_allocation, network_segment_type, fixed_ip,
+fixed_mask, fixed_gateway, primary; legacy: nic_type). Accepted values:
+role=host\|dpu_os\|dpu_bmc\|host_bmc\|unspecified and
+ip_allocation=dynamic\|fixed\|retained\|unspecified.
+network_segment_type uses protobuf enum numbers: tenant=0, admin=1,
+underlay=2, host_inband=3. Replaces the machines full interface list.
+For a matching stored MAC, omitting role preserves the stored role;
+role=unspecified resets it to host. Omitting ip_allocation preserves the
+stored policy when the presence of fixed_ip is unchanged;
+ip_allocation=unspecified resets it to fixed_ip inference. Omitting any
+other optional interface field, including network_segment_type, clears
+its stored value.
 
 **--disable-lockdown** *\<DISABLE_LOCKDOWN\>*  
 If true, do not lock down the server as part of lifecycle management
 within the state machine. If unset or false, preserve the default
-behavior of locking down the server after configuring the BIOS.\
+behavior of locking down the server after configuring the BIOS.  
 
-\
+  
 *Possible values:*
 
-- true
-
-- false
+> -   true
+>
+> -   false
 
 **--sort-by** *\<SORT_BY\>* \[default: primary-id\]  
-Sort output by specified field\
+Sort output by specified field  
 
-\
+  
 *Possible values:*
 
-- primary-id: Sort by the primary id
-
-- state: Sort by state
+> -   primary-id: Sort by the primary id
+>
+> -   state: Sort by state
 
 **-h**, **--help**  
 Print help (see a summary with -h)
@@ -170,6 +208,9 @@ nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --sku-
 nico-admin-cli expected-machine patch --id 12345678-1234-5678-90ab-cdef01234567 --sku-id DGX-H100-640GB
 nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --bmc-username admin --bmc-password mynewpassword
 nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --dpu-policy ignore
+nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --bmc-ip-allocation retained
+nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --interfaces '[{"mac_address":"02:00:00:00:20:01","fixed_ip":"192.0.2.10"}]'
+nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 --interfaces '[{"mac_address":"02:00:00:00:20:01","role":"unspecified","ip_allocation":"unspecified","fixed_ip":"192.0.2.10"}]'
 ```
 
 ---
