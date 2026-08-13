@@ -1734,4 +1734,5 @@ func assertSiteFabricIPBlock(t *testing.T, ipBlock cdbm.IPBlock, name string, pr
 	assert.Equal(t, cdbm.IPBlockStatusReady, ipBlock.Status)
 	assert.False(t, ipBlock.FullGrant)
 	assert.Nil(t, ipBlock.TenantID)
+	assert.Equal(t, cdbm.IPBlockOriginSiteFabric, ipBlock.Origin)
 }

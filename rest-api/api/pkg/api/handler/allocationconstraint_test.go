@@ -89,9 +89,9 @@ func TestAllocationConstraintHandler_Update(t *testing.T) {
 	}
 
 	// Setup IP Blocks
-	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "testipb", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb2 := testIPBlockBuildIPBlock(t, dbSession, "testipb2", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.167.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb3 := testIPBlockBuildIPBlock(t, dbSession, "testipb3", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "10.100.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "testipb", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb2 := testIPBlockBuildIPBlock(t, dbSession, "testipb2", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.167.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb3 := testIPBlockBuildIPBlock(t, dbSession, "testipb3", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "10.100.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
 
 	parentPref1, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, ipb1.Prefix, ipb1.PrefixLength, ipb1.RoutingType, ipb1.InfrastructureProviderID.String(), ipb1.SiteID.String())
 	assert.Nil(t, err)

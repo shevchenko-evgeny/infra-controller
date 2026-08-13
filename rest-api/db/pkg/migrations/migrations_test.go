@@ -16,6 +16,7 @@ import (
 	"github.com/NVIDIA/infra-controller/rest-api/db/pkg/db/paginator"
 	"github.com/NVIDIA/infra-controller/rest-api/db/pkg/util"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -150,6 +151,212 @@ func TestVpcSlaacEnabledMigration(t *testing.T) {
 	persisted, err = model.NewVpcDAO(dbSession).GetByID(ctx, nil, vpc.ID, nil)
 	require.NoError(t, err)
 	require.True(t, persisted.SlaacEnabled)
+}
+
+func TestIPBlockOriginFieldsMigration(t *testing.T) {
+	ctx := context.Background()
+	type fixture struct {
+		dbSession                     *db.Session
+		providerID, tenantID, siteID  uuid.UUID
+		allocationID, userID          uuid.UUID
+		parent1ID, parent2ID, childID uuid.UUID
+		deletedChildID                uuid.UUID
+	}
+	// TestSetupSchema creates the current model. newFixture removes this
+	// migration's fields, and insertIPBlock uses only predecessor columns, so the
+	// callback sees the schema and records it will encounter during an upgrade.
+
+	insertIPBlock := func(t *testing.T, f fixture, id uuid.UUID, tenantID *uuid.UUID, deleted bool, sequence int) {
+		t.Helper()
+		var tenantValue, deletedValue any
+		if tenantID != nil {
+			tenantValue = *tenantID
+		}
+		if deleted {
+			deletedValue = time.Now()
+		}
+		_, err := f.dbSession.DB.ExecContext(ctx, `
+			INSERT INTO ip_block (
+				id, name, site_id, infrastructure_provider_id, tenant_id,
+				routing_type, prefix, prefix_length, protocol_version,
+				full_grant, status, deleted, created_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, id, fmt.Sprintf("migration-%d", sequence), f.siteID, f.providerID,
+			tenantValue, model.IPBlockRoutingTypeDatacenterOnly,
+			fmt.Sprintf("10.%d.0.0", sequence), 24, model.IPBlockProtocolVersionV4,
+			false, model.IPBlockStatusReady, deletedValue, f.userID)
+		require.NoError(t, err)
+	}
+
+	createConstraint := func(t *testing.T, f fixture, parentID, childID uuid.UUID) error {
+		t.Helper()
+		_, err := model.NewAllocationConstraintDAO(f.dbSession).Create(
+			ctx, nil, model.AllocationConstraintCreateInput{
+				AllocationID:      f.allocationID,
+				ResourceType:      model.AllocationResourceTypeIPBlock,
+				ResourceTypeID:    parentID,
+				ConstraintType:    model.AllocationConstraintTypeReserved,
+				ConstraintValue:   24,
+				DerivedResourceID: &childID,
+				CreatedBy:         f.userID,
+			},
+		)
+		return err
+	}
+	recreatePredecessorSchema := func(t *testing.T, dbSession *db.Session) {
+		t.Helper()
+		_, err := dbSession.DB.ExecContext(ctx, `
+			ALTER TABLE ip_block
+				DROP COLUMN IF EXISTS site_prefix_id,
+				DROP COLUMN IF EXISTS parent_ip_block_id,
+				DROP COLUMN IF EXISTS origin
+		`)
+		require.NoError(t, err)
+	}
+
+	newFixture := func(t *testing.T) fixture {
+		t.Helper()
+		dbSession := util.GetTestDBSession(t, true)
+		t.Cleanup(dbSession.Close)
+		model.TestSetupSchema(t, dbSession)
+
+		f := fixture{
+			dbSession: dbSession, providerID: uuid.New(), tenantID: uuid.New(),
+			siteID: uuid.New(), allocationID: uuid.New(), userID: uuid.New(),
+			parent1ID: uuid.New(), parent2ID: uuid.New(), childID: uuid.New(),
+			deletedChildID: uuid.New(),
+		}
+		for _, row := range []any{
+			&model.InfrastructureProvider{ID: f.providerID, Name: "migration-provider", Org: "migration-provider", CreatedBy: f.userID},
+			&model.Tenant{ID: f.tenantID, Name: "migration-tenant", Org: "migration-tenant", CreatedBy: f.userID},
+			&model.Site{ID: f.siteID, Name: "migration-site", Org: "migration-provider", InfrastructureProviderID: f.providerID, Status: model.SiteStatusRegistered, CreatedBy: f.userID},
+			&model.Allocation{ID: f.allocationID, Name: "migration-allocation", InfrastructureProviderID: f.providerID, TenantID: f.tenantID, SiteID: f.siteID, Status: model.AllocationStatusPending, CreatedBy: f.userID},
+		} {
+			_, err := dbSession.DB.NewInsert().Model(row).Exec(ctx)
+			require.NoError(t, err)
+		}
+
+		recreatePredecessorSchema(t, dbSession)
+		insertIPBlock(t, f, f.parent1ID, nil, false, 50)
+		insertIPBlock(t, f, f.parent2ID, nil, false, 51)
+		insertIPBlock(t, f, f.childID, &f.tenantID, false, 52)
+		insertIPBlock(t, f, f.deletedChildID, &f.tenantID, true, 53)
+		require.NoError(t, createConstraint(t, f, f.parent1ID, f.childID))
+		return f
+	}
+
+	assertConstraint := func(t *testing.T, err error, name string) {
+		t.Helper()
+		require.Error(t, err)
+		var pgErr *pgconn.PgError
+		require.ErrorAs(t, err, &pgErr)
+		assert.Equal(t, name, pgErr.ConstraintName)
+	}
+	sourceColumnCount := func(t *testing.T, dbSession *db.Session) int {
+		t.Helper()
+		count, err := dbSession.DB.NewSelect().Table("information_schema.columns").
+			Where("table_schema = 'public'").Where("table_name = 'ip_block'").
+			Where("column_name IN ('origin', 'parent_ip_block_id', 'site_prefix_id')").Count(ctx)
+		require.NoError(t, err)
+		return count
+	}
+
+	t.Run("backfills, constrains, and preserves source fields", func(t *testing.T) {
+		f := newFixture(t)
+		require.NoError(t, ipBlockOriginFieldsUpMigration(ctx, f.dbSession.DB))
+
+		for _, tt := range []struct {
+			name, origin, parent string
+			id                   uuid.UUID
+		}{
+			{name: "provider root", id: f.parent1ID, origin: "SiteFabric"},
+			{name: "Allocation child", id: f.childID, origin: "Allocation", parent: f.parent1ID.String()},
+			{name: "deleted Allocation without constraint", id: f.deletedChildID, origin: "Allocation"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				var origin, parent string
+				err := f.dbSession.DB.QueryRowContext(ctx,
+					`SELECT origin, COALESCE(parent_ip_block_id::text, '') FROM ip_block WHERE id = ?`, tt.id,
+				).Scan(&origin, &parent)
+				require.NoError(t, err)
+				assert.Equal(t, tt.origin, origin)
+				assert.Equal(t, tt.parent, parent)
+			})
+		}
+
+		legacyID, tenantRecordID := uuid.New(), uuid.New()
+		insertIPBlock(t, f, legacyID, &f.tenantID, false, 54)
+		insertIPBlock(t, f, tenantRecordID, &f.tenantID, false, 55)
+		sitePrefixID := uuid.New()
+		_, err := f.dbSession.DB.ExecContext(ctx,
+			`UPDATE ip_block SET origin = 'Tenant', site_prefix_id = ? WHERE id = ?`, sitePrefixID, tenantRecordID)
+		require.NoError(t, err)
+
+		for _, tt := range []struct {
+			name, statement, constraint string
+			id                          uuid.UUID
+		}{
+			{name: "SiteFabric SitePrefix", statement: `UPDATE ip_block SET site_prefix_id = id WHERE id = ?`, id: f.parent1ID, constraint: "ip_block_origin_fields_check"},
+			{name: "legacy source link", statement: `UPDATE ip_block SET site_prefix_id = id WHERE id = ?`, id: legacyID, constraint: "ip_block_origin_fields_check"},
+			{name: "self parent", statement: `UPDATE ip_block SET parent_ip_block_id = id WHERE id = ?`, id: f.childID, constraint: "ip_block_origin_fields_check"},
+			{name: "missing parent", statement: `UPDATE ip_block SET parent_ip_block_id = '00000000-0000-0000-0000-000000000001' WHERE id = ?`, id: f.childID, constraint: "ip_block_parent_ip_block_id_fkey"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := f.dbSession.DB.ExecContext(ctx, tt.statement, tt.id)
+				assertConstraint(t, err, tt.constraint)
+			})
+		}
+
+		_, err = f.dbSession.DB.ExecContext(ctx,
+			`UPDATE ip_block SET origin = 'Tenant', site_prefix_id = ? WHERE id = ?`, sitePrefixID, legacyID)
+		assertConstraint(t, err, "ip_block_live_site_prefix_id_key")
+
+		// The callback may be retried if migration bookkeeping fails after its
+		// transaction commits. Reapplying it must classify new legacy records without
+		// disturbing source identity that was already persisted.
+		require.NoError(t, createConstraint(t, f, f.parent2ID, legacyID))
+		require.NoError(t, ipBlockOriginFieldsUpMigration(ctx, f.dbSession.DB))
+		var legacyOrigin string
+		var legacyParentID uuid.UUID
+		err = f.dbSession.DB.QueryRowContext(ctx,
+			`SELECT origin, parent_ip_block_id FROM ip_block WHERE id = ?`, legacyID,
+		).Scan(&legacyOrigin, &legacyParentID)
+		require.NoError(t, err)
+		assert.Equal(t, "Allocation", legacyOrigin)
+		assert.Equal(t, f.parent2ID, legacyParentID)
+
+		var origin string
+		var persistedSitePrefixID uuid.UUID
+		err = f.dbSession.DB.QueryRowContext(ctx,
+			`SELECT origin, site_prefix_id FROM ip_block WHERE id = ?`, tenantRecordID,
+		).Scan(&origin, &persistedSitePrefixID)
+		require.NoError(t, err)
+		assert.Equal(t, "Tenant", origin)
+		assert.Equal(t, sitePrefixID, persistedSitePrefixID)
+
+		require.ErrorIs(t, ipBlockOriginFieldsDownMigration(ctx, f.dbSession.DB), errIPBlockOriginFieldsRollback)
+		assert.Equal(t, 3, sourceColumnCount(t, f.dbSession))
+	})
+
+	t.Run("duplicate active parent rolls back and succeeds after removal", func(t *testing.T) {
+		f := newFixture(t)
+		// Two live constraints make the parent unknowable. The transaction must
+		// leave the predecessor schema intact so an operator can repair and retry it.
+		require.NoError(t, createConstraint(t, f, f.parent2ID, f.childID))
+		err := ipBlockOriginFieldsUpMigration(ctx, f.dbSession.DB)
+		require.Error(t, err)
+		var pgErr *pgconn.PgError
+		require.ErrorAs(t, err, &pgErr)
+		assert.Equal(t, "21000", pgErr.Code)
+		assert.Zero(t, sourceColumnCount(t, f.dbSession))
+
+		_, err = f.dbSession.DB.ExecContext(ctx,
+			`DELETE FROM allocation_constraint WHERE resource_type_id = ? AND derived_resource_id = ?`,
+			f.parent2ID, f.childID,
+		)
+		require.NoError(t, err)
+		require.NoError(t, ipBlockOriginFieldsUpMigration(ctx, f.dbSession.DB))
+	})
 }
 
 func Test_vpcProviderIDUpMigration(t *testing.T) {

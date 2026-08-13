@@ -131,6 +131,9 @@ func testIPBlockBuildUser(t *testing.T, dbSession *cdb.Session, starfleetID stri
 	return u
 }
 
+// testIPBlockBuildIPBlock leaves Origin empty to model records written before
+// that field was added. During a rolling upgrade, tenant_id still separates
+// provider roots from Allocation children.
 func testIPBlockBuildIPBlock(t *testing.T, dbSession *cdb.Session, name string, site *cdbm.Site, ip *cdbm.InfrastructureProvider, tenantID *uuid.UUID, routingType, prefix string, blockSize int, protocolVersion string, fullGrant bool, status string, user *cdbm.User) *cdbm.IPBlock {
 	ipbDAO := cdbm.NewIPBlockDAO(dbSession)
 	ipb, err := ipbDAO.Create(
@@ -152,6 +155,29 @@ func testIPBlockBuildIPBlock(t *testing.T, dbSession *cdb.Session, name string, 
 	)
 	assert.Nil(t, err)
 	return ipb
+}
+
+// testIPBlockBuildTenantSitePrefix creates a private Tenant SitePrefix record.
+// Generic IPBlock handlers and parent lookups must treat it as missing.
+func testIPBlockBuildTenantSitePrefix(t *testing.T, dbSession *cdb.Session, name string, site *cdbm.Site, ip *cdbm.InfrastructureProvider, tenant *cdbm.Tenant, prefix string, prefixLength int, status string, user *cdbm.User) *cdbm.IPBlock {
+	t.Helper()
+	sitePrefixID := uuid.New()
+	ipBlock, err := cdbm.NewIPBlockDAO(dbSession).Create(context.Background(), nil, cdbm.IPBlockCreateInput{
+		Name:                     name,
+		SiteID:                   site.ID,
+		InfrastructureProviderID: ip.ID,
+		TenantID:                 &tenant.ID,
+		Origin:                   cdbm.IPBlockOriginTenant,
+		SitePrefixID:             &sitePrefixID,
+		RoutingType:              cdbm.IPBlockRoutingTypeDatacenterOnly,
+		Prefix:                   prefix,
+		PrefixLength:             prefixLength,
+		ProtocolVersion:          cdbm.IPBlockProtocolVersionV4,
+		Status:                   status,
+		CreatedBy:                &user.ID,
+	})
+	require.NoError(t, err)
+	return ipBlock
 }
 
 func testIPBlockBuildStatusDetail(t *testing.T, dbSession *cdb.Session, entityID string, status string) {
@@ -543,6 +569,11 @@ func TestIPBlockHandler_Create(t *testing.T) {
 				assert.Equal(t, rsp.Status, cdbm.IPBlockStatusReady)
 				// validate response fields
 				assert.Equal(t, len(rsp.StatusHistory), 1)
+				// A provider-created IPBlock is a SiteFabric pool, not a tenant record.
+				persisted, derr := cdbm.NewIPBlockDAO(dbSession).GetByID(ctx, nil, uuid.MustParse(rsp.ID), nil)
+				require.NoError(t, derr)
+				assert.Equal(t, cdbm.IPBlockOriginSiteFabric, persisted.Origin)
+				assert.Nil(t, persisted.ParentIPBlockID)
 				// validate message fields
 				if tc.expectMessage != nil {
 					assert.Equal(t, rsp.StatusHistory[0].Message, tc.expectMessage)
@@ -603,6 +634,8 @@ func TestIPBlockHandler_Update(t *testing.T) {
 	ipb2 := testIPBlockBuildIPBlock(t, dbSession, "testDel2", site2, ip2, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusPending, user)
 	assert.NotNil(t, ipb2)
 	testIPBlockBuildStatusDetail(t, dbSession, ipb2.ID.String(), cdbm.IPBlockStatusPending)
+	tenant := testIPBlockBuildTenant(t, dbSession, "private-tenant", "private-tenant", user)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site, ip, tenant, "10.202.0.0", 24, cdbm.IPBlockStatusReady, user)
 
 	errBody1, err := json.Marshal(model.APIIPBlockUpdateRequest{Name: cutil.GetPtr("a")})
 	assert.Nil(t, err)
@@ -684,13 +717,13 @@ func TestIPBlockHandler_Update(t *testing.T) {
 			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when specified org does not have infrastructure provider matching the one in ipblock",
+			name:           "unrelated provider sees not found",
 			reqOrgName:     ipOrg2,
 			reqBody:        string(okBody1),
 			user:           user,
 			ipbID:          ipb1.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:           "error when specified ipblock id is invalid uuid",
@@ -721,6 +754,16 @@ func TestIPBlockHandler_Update(t *testing.T) {
 			ipbID:          ipb1.ID.String(),
 			expectedErr:    true,
 			expectedStatus: http.StatusConflict,
+		},
+		{
+			name:           "provider cannot update a Tenant SitePrefix",
+			reqOrgName:     ipOrg1,
+			reqBody:        string(okBody1),
+			reqIpb:         tenantSitePrefix,
+			user:           user,
+			ipbID:          tenantSitePrefix.ID.String(),
+			expectedErr:    true,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:               "success case 1",
@@ -797,6 +840,11 @@ func TestIPBlockHandler_Update(t *testing.T) {
 			}
 		})
 	}
+	// A scoped 404 must leave the private record untouched. Read it without the
+	// handler filter to distinguish hiding it from accidentally updating it.
+	tenantSitePrefixAfter, err := cdbm.NewIPBlockDAO(dbSession).GetByID(ctx, nil, tenantSitePrefix.ID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "private-site-prefix", tenantSitePrefixAfter.Name)
 }
 
 func TestIPBlockHandler_Get(t *testing.T) {
@@ -875,6 +923,7 @@ func TestIPBlockHandler_Get(t *testing.T) {
 	ipb5 := testIPBlockBuildIPBlock(t, dbSession, "test5", site, ip, cutil.GetPtr(tn3.ID), cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusPending, ipu)
 	assert.NotNil(t, ipb5)
 	testIPBlockBuildStatusDetail(t, dbSession, ipb5.ID.String(), cdbm.IPBlockStatusPending)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site, ip, tn, "10.201.0.0", 24, cdbm.IPBlockStatusPending, tnu)
 
 	alloc := testIPBlockBuildAllocation(t, dbSession, site3, tn, "testAlloc", ipu)
 	allocConstraint := testIPBlockBuildAllocationConstraint(t, dbSession, alloc.ID, cdbm.AllocationResourceTypeIPBlock, ipb3.ID, cdbm.AllocationConstraintTypeOnDemand, 10, nil, ipu.ID)
@@ -909,6 +958,11 @@ func TestIPBlockHandler_Get(t *testing.T) {
 	dsipbprefix, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, dsipb.Prefix, dsipb.PrefixLength, dsipb.RoutingType, dsipb.InfrastructureProviderID.String(), dsipb.SiteID.String())
 	assert.Nil(t, err)
 	assert.NotNil(t, dsipbprefix)
+	// This service account has provider and tenant roles for the same organization.
+	// The record below is visible only through its tenant role.
+	dualScopeTenantBlock := testIPBlockBuildIPBlock(t, dbSession, "tenant-prefix-other-provider", site, ip, &stn.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "172.168.3.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusPending, su)
+	require.NotNil(t, dualScopeTenantBlock)
+	common.TestBuildStatusDetail(t, dbSession, dualScopeTenantBlock.ID.String(), cdbm.IPBlockStatusReady, cutil.GetPtr("IP Block is ready for use"))
 
 	cfg := common.GetTestConfig()
 	tempClient := &tmocks.Client{}
@@ -977,20 +1031,36 @@ func TestIPBlockHandler_Get(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "error when IP Block is not associated with Provider",
+			name:           "unrelated provider sees not found",
 			reqOrgName:     ipOrg1,
 			user:           ipu,
 			ipbID:          ipb2.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusForbidden,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when IP Block is not associated with Tenant",
+			name:           "unrelated tenant sees not found",
 			reqOrgName:     tnOrg1,
 			user:           tnu,
 			ipbID:          ipb1.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusForbidden,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "provider cannot retrieve a Tenant SitePrefix",
+			reqOrgName:     ipOrg1,
+			user:           ipu,
+			ipbID:          tenantSitePrefix.ID.String(),
+			expectedErr:    true,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "tenant cannot retrieve its SitePrefix through the generic IPBlock API",
+			reqOrgName:     tnOrg1,
+			user:           tnu,
+			ipbID:          tenantSitePrefix.ID.String(),
+			expectedErr:    true,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:                     "success when retrieving IP Block as Provider with admin role",
@@ -1042,6 +1112,15 @@ func TestIPBlockHandler_Get(t *testing.T) {
 			expectedErr:              false,
 			expectedStatus:           http.StatusOK,
 			expectedID:               dsipb.ID.String(),
+			expectedStatusDetailsCnt: 1,
+		},
+		{
+			name:                     "dual-role account falls back to its tenant view",
+			reqOrgName:               sOrg,
+			user:                     su,
+			ipbID:                    dualScopeTenantBlock.ID.String(),
+			expectedStatus:           http.StatusOK,
+			expectedID:               dualScopeTenantBlock.ID.String(),
 			expectedStatusDetailsCnt: 1,
 		},
 		{
@@ -1252,6 +1331,7 @@ func TestIPBlockHandler_GetAll(t *testing.T) {
 	assert.NotNil(t, tn)
 	tn2 := testIPBlockBuildTenant(t, dbSession, "test-tenant-2", tnOrg2, tnu)
 	assert.NotNil(t, tn2)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-tenant-site-prefix", site, ip, tn, "10.200.0.0", 24, cdbm.IPBlockStatusPending, tnu)
 
 	totalCount := 30
 
@@ -1329,6 +1409,12 @@ func TestIPBlockHandler_GetAll(t *testing.T) {
 	dsipbprefix, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, dsipb.Prefix, dsipb.PrefixLength, dsipb.RoutingType, dsipb.InfrastructureProviderID.String(), dsipb.SiteID.String())
 	assert.Nil(t, err)
 	assert.NotNil(t, dsipbprefix)
+	// This Allocation belongs to the service-account Tenant but another Provider.
+	// Filtering before pagination must preserve it through the tenant view.
+	dualScopeTenantBlock := testIPBlockBuildIPBlock(t, dbSession, "tenant-prefix-other-provider", site, ip, &stn.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "172.170.1.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusPending, su)
+	require.NotNil(t, dualScopeTenantBlock)
+	testIPBlockBuildStatusDetail(t, dbSession, dualScopeTenantBlock.ID.String(), cdbm.IPBlockStatusPending)
+	common.TestBuildStatusDetail(t, dbSession, dualScopeTenantBlock.ID.String(), cdbm.IPBlockStatusReady, cutil.GetPtr("IP Block is ready for use"))
 
 	cfg := common.GetTestConfig()
 	tempClient := &tmocks.Client{}
@@ -1423,7 +1509,25 @@ func TestIPBlockHandler_GetAll(t *testing.T) {
 			user:           su,
 			expectedErr:    false,
 			expectedStatus: http.StatusOK,
-			expectedCnt:    2,
+			expectedCnt:    3,
+		},
+		{
+			name:           "service account sees its Tenant Allocation from another Provider",
+			reqOrgName:     sOrg,
+			user:           su,
+			querySearch:    cutil.GetPtr(dualScopeTenantBlock.Name),
+			expectedStatus: http.StatusOK,
+			expectedCnt:    1,
+			expectedTotal:  cutil.GetPtr(1),
+		},
+		{
+			name:           "dual-role account with no authorized matches returns an empty page",
+			reqOrgName:     sOrg,
+			user:           su,
+			querySearch:    cutil.GetPtr("no-such-service-account-ip-block"),
+			expectedStatus: http.StatusOK,
+			expectedCnt:    0,
+			expectedTotal:  cutil.GetPtr(0),
 		},
 		{
 			name:           "success when filtering by Site ID as Tenant",
@@ -1497,6 +1601,15 @@ func TestIPBlockHandler_GetAll(t *testing.T) {
 			expectedErr:    false,
 			expectedStatus: http.StatusOK,
 			expectedCnt:    totalCount / 2,
+		},
+		{
+			name:           "Tenant SitePrefix is absent from search and pagination total",
+			reqOrgName:     tnOrg1,
+			user:           tnu,
+			querySearch:    cutil.GetPtr(tenantSitePrefix.Name),
+			expectedStatus: http.StatusOK,
+			expectedCnt:    0,
+			expectedTotal:  cutil.GetPtr(0),
 		},
 		{
 			name:           "success when status query search specified",
@@ -1761,6 +1874,7 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 	parentIpb3 := testIPBlockBuildIPBlock(t, dbSession, "test3", site3, ip3, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
 	assert.NotNil(t, parentIpb3)
 	testIPBlockBuildStatusDetail(t, dbSession, parentIpb3.ID.String(), cdbm.IPBlockStatusReady)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site3, ip3, tn, "192.168.5.0", 24, cdbm.IPBlockStatusReady, ipu)
 
 	// Child IPBlocks
 	childIpb1 := testIPBlockBuildIPBlock(t, dbSession, "test3", site, ip, cutil.GetPtr(tn.ID), cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.3.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusError, ipu)
@@ -1856,23 +1970,31 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when infrastructure provider in org doesnt match infrastructure provider in ipblock",
+			name:           "unrelated provider sees not found",
 			reqOrgName:     ipOrg1,
 			user:           ipu,
 			ipbID:          parentIpb2.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when dervied ipblock provided as parent ipblock",
+			name:           "Allocation child is not a provider root",
 			reqOrgName:     ipOrg1,
 			user:           ipu,
 			ipbID:          childIpb1.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:                   "success when valid parent id with two derived blocks are specified specified",
+			name:           "Tenant SitePrefix is indistinguishable from a missing parent",
+			reqOrgName:     ipOrg3,
+			user:           ipu,
+			ipbID:          tenantSitePrefix.ID.String(),
+			expectedErr:    true,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:                   "returns two Allocation children with Site and Tenant relations",
 			reqOrgName:             ipOrg1,
 			user:                   ipu,
 			ipbID:                  parentIpb1.ID.String(),
@@ -1880,7 +2002,8 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 			expectedStatus:         http.StatusOK,
 			expectedCnt:            2,
 			expectedTotal:          cutil.GetPtr(2),
-			queryIncludeRelations1: cutil.GetPtr(cdbm.InfrastructureProviderRelationName),
+			expectedSiteName:       cutil.GetPtr("testSite"),
+			expectedTenantOrg:      &tnOrg1,
 			queryIncludeRelations2: cutil.GetPtr(cdbm.SiteRelationName),
 			queryIncludeRelations3: cutil.GetPtr(cdbm.TenantRelationName),
 			pageNumber:             cutil.GetPtr(1),
@@ -1903,7 +2026,7 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 			verifyChildSpanner: true,
 		},
 		{
-			name:               "success when valid parent id with one derived blocks are specified specified",
+			name:               "returns one Allocation child",
 			reqOrgName:         ipOrg2,
 			user:               ipu,
 			ipbID:              parentIpb2.ID.String(),
@@ -1914,17 +2037,18 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 			verifyChildSpanner: true,
 		},
 		{
-			name:               "success when valid parent id with zero derived blocks are specified specified",
+			name:               "returns an empty page for a root with no Allocation children",
 			reqOrgName:         ipOrg3,
 			user:               ipu,
 			ipbID:              parentIpb3.ID.String(),
 			expectedErr:        false,
 			expectedStatus:     http.StatusOK,
 			expectedCnt:        0,
+			expectedTotal:      cutil.GetPtr(0),
 			verifyChildSpanner: true,
 		},
 		{
-			name:               "success when valid parent id with zero derived blocks are specified specified with query search filter",
+			name:               "search filters the root's Allocation children",
 			reqOrgName:         ipOrg1,
 			user:               ipu,
 			ipbID:              parentIpb1.ID.String(),
@@ -1936,7 +2060,7 @@ func TestDerivedIPBlockHandler_GetAll(t *testing.T) {
 			verifyChildSpanner: true,
 		},
 		{
-			name:               "success when valid parent id with zero derived blocks are specified specified with status filter",
+			name:               "status filters the root's Allocation children",
 			reqOrgName:         ipOrg1,
 			user:               ipu,
 			ipbID:              parentIpb1.ID.String(),
@@ -2121,6 +2245,7 @@ func TestIPBlockHandler_Delete(t *testing.T) {
 
 	ipb4 := testIPBlockBuildIPBlock(t, dbSession, "testDel4", site3, ip3, &tn.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.3.0", 24, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusPending, user)
 	assert.NotNil(t, ipb4)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site3, ip3, tn, "192.168.4.0", 24, cdbm.IPBlockStatusPending, user)
 
 	cfg := common.GetTestConfig()
 	tempClient := &tmocks.Client{}
@@ -2163,12 +2288,12 @@ func TestIPBlockHandler_Delete(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "error when specified org does not have infrastructure provider",
+			name:           "unrelated provider sees not found",
 			reqOrgName:     ipOrg3,
 			user:           user,
 			ipbID:          ipb1.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:           "error when specified ipblock doesnt exist",
@@ -2179,20 +2304,28 @@ func TestIPBlockHandler_Delete(t *testing.T) {
 			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when org's infrastructure provider does not match ipblock's infrastructure provider",
+			name:           "other provider sees not found",
 			reqOrgName:     ipOrg2,
 			user:           user,
 			ipbID:          ipb1.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
-			name:           "error when this is a derived ipBlock with non-nil tenantID",
+			name:           "Allocation child is not a provider root",
 			reqOrgName:     ipOrg3,
 			user:           user,
 			ipbID:          ipb4.ID.String(),
 			expectedErr:    true,
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "Tenant SitePrefix is indistinguishable from a missing IPBlock",
+			reqOrgName:     ipOrg3,
+			user:           user,
+			ipbID:          tenantSitePrefix.ID.String(),
+			expectedErr:    true,
+			expectedStatus: http.StatusNotFound,
 		},
 		{
 			name:           "error when allocations exist for ipblock",
@@ -2272,4 +2405,7 @@ func TestIPBlockHandler_Delete(t *testing.T) {
 			}
 		})
 	}
+	// The filtered NotFound path must leave the Tenant SitePrefix in the database.
+	_, err = cdbm.NewIPBlockDAO(dbSession).GetByID(ctx, nil, tenantSitePrefix.ID, nil)
+	require.NoError(t, err)
 }

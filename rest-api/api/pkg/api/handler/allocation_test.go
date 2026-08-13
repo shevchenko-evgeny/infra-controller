@@ -137,8 +137,6 @@ func TestAllocationHandler_Create(t *testing.T) {
 
 	tenant1 := testMachineBuildTenant(t, dbSession, tnOrg1, "t1")
 	tenant2 := testMachineBuildTenant(t, dbSession, tnOrg2, "t2")
-	tenant3 := testMachineBuildTenant(t, dbSession, tnOrg2, "t3")
-	tenant4 := testMachineBuildTenant(t, dbSession, tnOrg2, "t4")
 
 	cfg := common.GetTestConfig()
 
@@ -176,11 +174,13 @@ func TestAllocationHandler_Create(t *testing.T) {
 		assert.NotNil(t, mcinst2)
 	}
 
-	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "test1pb", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb2 := testIPBlockBuildIPBlock(t, dbSession, "test2pb", site2, ip2, &tenant2.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb3 := testIPBlockBuildIPBlock(t, dbSession, "test3pb", site3, ip2, &tenant2.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb4 := testIPBlockBuildIPBlock(t, dbSession, "test4pb", site4, ip2, &tenant3.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "196.162.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipb5 := testIPBlockBuildIPBlock(t, dbSession, "test4pb", site5, ip2, &tenant4.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "194.162.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "test1pb", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb2 := testIPBlockBuildIPBlock(t, dbSession, "test2pb", site2, ip2, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb3 := testIPBlockBuildIPBlock(t, dbSession, "test3pb", site3, ip2, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb4 := testIPBlockBuildIPBlock(t, dbSession, "test4pb", site4, ip2, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "196.162.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb5 := testIPBlockBuildIPBlock(t, dbSession, "test4pb", site5, ip2, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "194.162.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site, ip, tenant1, "192.169.0.0", 16, cdbm.IPBlockStatusReady, ipu)
 
 	ipbFG := testIPBlockBuildIPBlock(t, dbSession, "testipbFG", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.170.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
 
@@ -194,6 +194,7 @@ func TestAllocationHandler_Create(t *testing.T) {
 	acBadIPBlockProviderMismatch := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: ipb2.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 24}
 	acBadIPBlockSiteMismatch := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: ipb3.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 24}
 	acBadIPBBlockSizeLargerThanParent := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: ipb1.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 15}
+	acTenantSitePrefix := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: tenantSitePrefix.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 24}
 	acGoodIPB := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: ipb1.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 24}
 
 	acGoodIPBFG := model.APIAllocationConstraintCreateRequest{ResourceType: cdbm.AllocationResourceTypeIPBlock, ResourceTypeID: ipbFG.ID.String(), ConstraintType: cdbm.AllocationConstraintTypeReserved, ConstraintValue: 16}
@@ -230,6 +231,8 @@ func TestAllocationHandler_Create(t *testing.T) {
 	errBodyBadSiteInIT, err := json.Marshal(model.APIAllocationCreateRequest{Name: "ok11", Description: cutil.GetPtr(""), TenantID: tenant1.ID.String(), SiteID: site.ID.String(), AllocationConstraints: []model.APIAllocationConstraintCreateRequest{acBadInstanceTypeSiteMismatch}})
 	assert.Nil(t, err)
 	errBodyBadIPBInAC, err := json.Marshal(model.APIAllocationCreateRequest{Name: "ok12", Description: cutil.GetPtr(""), TenantID: tenant1.ID.String(), SiteID: site.ID.String(), AllocationConstraints: []model.APIAllocationConstraintCreateRequest{acBadIPBlockDoesNotExist}})
+	assert.Nil(t, err)
+	errBodyTenantSitePrefixInAC, err := json.Marshal(model.APIAllocationCreateRequest{Name: "private-ipblock", Description: cutil.GetPtr(""), TenantID: tenant1.ID.String(), SiteID: site.ID.String(), AllocationConstraints: []model.APIAllocationConstraintCreateRequest{acTenantSitePrefix}})
 	assert.Nil(t, err)
 	errBodyBadIPInIPB, err := json.Marshal(model.APIAllocationCreateRequest{Name: "ok13", Description: cutil.GetPtr(""), TenantID: tenant1.ID.String(), SiteID: site.ID.String(), AllocationConstraints: []model.APIAllocationConstraintCreateRequest{acBadIPBlockProviderMismatch}})
 	assert.Nil(t, err)
@@ -457,6 +460,14 @@ func TestAllocationHandler_Create(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name:           "Tenant SitePrefix cannot be used as an Allocation parent",
+			reqOrgName:     ipOrg1,
+			reqBody:        string(errBodyTenantSitePrefixInAC),
+			user:           ipu,
+			expectedErr:    true,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name:           "error when IP Block in Allocation Constraint belongs to a different Provider than current Org's",
 			reqOrgName:     ipOrg1,
 			reqBody:        string(errBodyBadIPInIPB),
@@ -579,6 +590,11 @@ func TestAllocationHandler_Create(t *testing.T) {
 					ipbDAO := cdbm.NewIPBlockDAO(dbSession)
 					childIPB, err := ipbDAO.GetByID(ctx, nil, childIPBUUID, nil)
 					assert.Nil(t, err)
+					// The Allocation child must retain the exact provider pool it was
+					// carved from; tenant ownership alone no longer identifies its source.
+					assert.Equal(t, cdbm.IPBlockOriginAllocation, childIPB.Origin)
+					require.NotNil(t, childIPB.ParentIPBlockID)
+					assert.Equal(t, uuid.MustParse(rsp.AllocationConstraints[0].ResourceTypeID), *childIPB.ParentIPBlockID)
 
 					sdDAO := cdbm.NewStatusDetailDAO(dbSession)
 					_, sdcount, err := sdDAO.GetAll(ctx, nil, cdbm.StatusDetailFilterInput{EntityIDs: []string{childIPBUUID.String()}}, cdbp.PageInput{})
@@ -1876,7 +1892,7 @@ func TestAllocationHandler_Update(t *testing.T) {
 	}
 
 	// Build test IP Block
-	ipb := common.TestBuildIPBlock(t, dbSession, "test-ip-block", site, &tenant1.ID, cdbm.IPBlockRoutingTypePublic, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, ipu)
+	ipb := common.TestBuildIPBlock(t, dbSession, "test-ip-block", site, nil, cdbm.IPBlockRoutingTypePublic, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, ipu)
 
 	parentPref, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, ipb.Prefix, ipb.PrefixLength, ipb.RoutingType, ipb.InfrastructureProviderID.String(), ipb.SiteID.String())
 	assert.NotNil(t, parentPref)
@@ -2202,9 +2218,9 @@ func TestAllocationHandler_Delete(t *testing.T) {
 		assert.NotNil(t, mcinst1)
 	}
 
-	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "testipb", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipb1 := testIPBlockBuildIPBlock(t, dbSession, "testipb", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
 	ipbFG := testIPBlockBuildIPBlock(t, dbSession, "testipbFG", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.170.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
-	ipbVpcPrefix := testIPBlockBuildIPBlock(t, dbSession, "testipbVpcPrefix", site, ip, &tenant1.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.169.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
+	ipbVpcPrefix := testIPBlockBuildIPBlock(t, dbSession, "testipbVpcPrefix", site, ip, nil, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.169.0.0", 16, cdbm.IPBlockProtocolVersionV4, false, cdbm.IPBlockStatusReady, ipu)
 
 	vpc1 := testAllocationBuildVpc(t, dbSession, ip, site, tenant1, ipOrg1, "testVPC")
 	os1 := testAllocationBuildOperatingSystem(t, dbSession, "ubuntu")

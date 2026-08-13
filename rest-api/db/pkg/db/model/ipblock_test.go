@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	otrace "go.opentelemetry.io/otel/trace"
 
 	cutil "github.com/NVIDIA/infra-controller/rest-api/common/pkg/util"
@@ -341,14 +342,79 @@ func TestIPBlockSQLDAO_GetByID(t *testing.T) {
 	}
 }
 
-func TestIPBlockSQLDAO_GetCountByStatus(t *testing.T) {
-	type fields struct {
-		dbSession *db.Session
-	}
-	type args struct {
-		ctx context.Context
+func TestIPBlockSQLDAO_GetOne(t *testing.T) {
+	ctx := context.Background()
+	dbSession := testIPBlockInitDB(t)
+	defer dbSession.Close()
+	testIPBlockSetupSchema(t, dbSession)
+	provider := testIPBlockBuildInfrastructureProvider(t, dbSession, "testIP")
+	site := testIPBlockBuildSite(t, dbSession, provider, "testSite")
+	tenant := testIPBlockBuildTenant(t, dbSession, "testTenant")
+	user := testInstanceBuildUser(t, dbSession, "testUser")
+	dao := NewIPBlockDAO(dbSession)
+
+	create := func(name string, tenantID *uuid.UUID, origin IPBlockOrigin, parentID, sitePrefixID *uuid.UUID, sequence int) *IPBlock {
+		t.Helper()
+		ipBlock, err := dao.Create(ctx, nil, IPBlockCreateInput{
+			Name:                     name,
+			SiteID:                   site.ID,
+			InfrastructureProviderID: provider.ID,
+			TenantID:                 tenantID,
+			Origin:                   origin,
+			ParentIPBlockID:          parentID,
+			SitePrefixID:             sitePrefixID,
+			RoutingType:              IPBlockRoutingTypeDatacenterOnly,
+			Prefix:                   fmt.Sprintf("10.%d.0.0", sequence),
+			PrefixLength:             24,
+			ProtocolVersion:          IPBlockProtocolVersionV4,
+			Status:                   IPBlockStatusReady,
+			CreatedBy:                &user.ID,
+		})
+		require.NoError(t, err)
+		return ipBlock
 	}
 
+	explicitRoot := create("explicit-root", nil, IPBlockOriginSiteFabric, nil, nil, 30)
+	explicitAllocation := create("explicit-allocation", &tenant.ID, IPBlockOriginAllocation, &explicitRoot.ID, nil, 31)
+	sitePrefixID := uuid.New()
+	tenantSitePrefix := create("tenant-site-prefix", &tenant.ID, IPBlockOriginTenant, nil, &sitePrefixID, 32)
+	assert.Equal(t, &explicitRoot.ID, explicitAllocation.ParentIPBlockID)
+	assert.Equal(t, &sitePrefixID, tenantSitePrefix.SitePrefixID)
+	// Empty Origin models records from an older writer. During a rolling upgrade,
+	// the source filters still classify them from tenant_id.
+	legacyRoot := create("legacy-root", nil, "", nil, nil, 33)
+	legacyAllocation := create("legacy-allocation", &tenant.ID, "", nil, nil, 34)
+
+	tests := []struct {
+		name    string
+		id      uuid.UUID
+		filter  IPBlockFilterInput
+		wantErr error
+	}{
+		{name: "provider sees explicit root", id: explicitRoot.ID, filter: NewProviderVisibleIPBlockFilter(provider.ID)},
+		{name: "provider sees explicit Allocation", id: explicitAllocation.ID, filter: NewProviderVisibleIPBlockFilter(provider.ID)},
+		{name: "provider cannot see Tenant SitePrefix", id: tenantSitePrefix.ID, filter: NewProviderVisibleIPBlockFilter(provider.ID), wantErr: db.ErrDoesNotExist},
+		{name: "provider root sees legacy root", id: legacyRoot.ID, filter: NewProviderRootIPBlockFilter(provider.ID)},
+		{name: "provider root excludes Allocation", id: explicitAllocation.ID, filter: NewProviderRootIPBlockFilter(provider.ID), wantErr: db.ErrDoesNotExist},
+		{name: "Allocation filter sees legacy Allocation", id: legacyAllocation.ID, filter: NewAllocationBackedIPBlockFilter(tenant.ID)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.filter.IPBlockIDs = []uuid.UUID{tt.id}
+			got, err := dao.GetOne(ctx, nil, tt.filter, nil)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.id, got.ID)
+		})
+	}
+}
+
+func TestIPBlockSQLDAO_GetCountByStatus(t *testing.T) {
 	ctx := context.Background()
 	dbSession := testIPBlockInitDB(t)
 	defer dbSession.Close()
@@ -396,142 +462,77 @@ func TestIPBlockSQLDAO_GetCountByStatus(t *testing.T) {
 	)
 	assert.Nil(t, err)
 	assert.NotNil(t, ipb2)
+	// Provider and Allocation totals exclude this private record. The site-only
+	// total includes it, proving the fixture is actually present.
+	sitePrefixID := uuid.New()
+	_, err = ipsd.Create(ctx, nil, IPBlockCreateInput{
+		Name:                     "private-tenant-root",
+		SiteID:                   site1.ID,
+		InfrastructureProviderID: ip.ID,
+		TenantID:                 &tenant.ID,
+		Origin:                   IPBlockOriginTenant,
+		SitePrefixID:             &sitePrefixID,
+		RoutingType:              IPBlockRoutingTypePublic,
+		Prefix:                   "10.0.3.0",
+		PrefixLength:             32,
+		ProtocolVersion:          "v4",
+		Status:                   IPBlockStatusProvisioning,
+		CreatedBy:                &user.ID,
+	})
+	require.NoError(t, err)
 
 	// OTEL Spanner configuration
 	_, _, ctx = testCommonTraceProviderSetup(t, ctx)
+	providerVisibleFilter := NewProviderVisibleIPBlockFilter(ip.ID)
+	allocationBackedFilter := NewAllocationBackedIPBlockFilter(tenant.ID)
+	statusCounts := func(provisioning int) map[string]int {
+		return map[string]int{
+			IPBlockStatusDeleting:     0,
+			IPBlockStatusError:        0,
+			IPBlockStatusReady:        0,
+			IPBlockStatusPending:      0,
+			IPBlockStatusProvisioning: provisioning,
+			"total":                   provisioning,
+		}
+	}
 
 	tests := []struct {
 		name               string
-		id                 uuid.UUID
-		fields             fields
-		args               args
-		wantErr            error
-		wantEmpty          bool
-		wantCount          int
-		wantStatusMap      map[string]int
-		reqIP              *uuid.UUID
-		reqSite            *uuid.UUID
-		reqTenant          *uuid.UUID
+		filter             IPBlockFilterInput
+		want               map[string]int
 		verifyChildSpanner bool
 	}{
 		{
-			name: "get ipblock status count by infrastructure provider with ipblock returns success",
-			fields: fields{
-				dbSession: dbSession,
-			},
-			args: args{
-				ctx: context.Background(),
-			},
-			wantErr:   nil,
-			wantEmpty: false,
-			wantCount: 2,
-			wantStatusMap: map[string]int{
-				IPBlockStatusDeleting:     0,
-				IPBlockStatusError:        0,
-				IPBlockStatusReady:        0,
-				IPBlockStatusPending:      0,
-				IPBlockStatusProvisioning: 2,
-				"total":                   2,
-			},
-			reqIP:              cutil.GetPtr(ip.ID),
+			name:               "provider counts exclude Tenant SitePrefix",
+			filter:             providerVisibleFilter,
+			want:               statusCounts(2),
 			verifyChildSpanner: true,
 		},
 		{
-			name: "get ipblock status count by site with ipblock returns success",
-			fields: fields{
-				dbSession: dbSession,
-			},
-			args: args{
-				ctx: context.Background(),
-			},
-			wantErr:   nil,
-			wantEmpty: false,
-			wantCount: 2,
-			wantStatusMap: map[string]int{
-				IPBlockStatusDeleting:     0,
-				IPBlockStatusError:        0,
-				IPBlockStatusReady:        0,
-				IPBlockStatusPending:      0,
-				IPBlockStatusProvisioning: 2,
-				"total":                   2,
-			},
-			reqSite: cutil.GetPtr(site1.ID),
+			name:   "site filter counts every source",
+			filter: IPBlockFilterInput{SiteIDs: []uuid.UUID{site1.ID}},
+			want:   statusCounts(3),
 		},
 		{
-			name: "get ipblock status count by tenant with ipblock returns success",
-			fields: fields{
-				dbSession: dbSession,
-			},
-			args: args{
-				ctx: context.Background(),
-			},
-			wantErr:   nil,
-			wantEmpty: false,
-			wantCount: 1,
-			wantStatusMap: map[string]int{
-				IPBlockStatusDeleting:     0,
-				IPBlockStatusError:        0,
-				IPBlockStatusReady:        0,
-				IPBlockStatusPending:      0,
-				IPBlockStatusProvisioning: 1,
-				"total":                   1,
-			},
-			reqTenant: cutil.GetPtr(tenant.ID),
+			name:   "Allocation counts exclude Tenant SitePrefix",
+			filter: allocationBackedFilter,
+			want:   statusCounts(1),
 		},
 		{
-			name: "get ipblock status count by unexisted infrastructure provider with no ipblock returns success",
-			fields: fields{
-				dbSession: dbSession,
-			},
-			args: args{
-				ctx: context.Background(),
-			},
-			wantErr:   nil,
-			wantEmpty: true,
-			wantCount: 0,
-			reqIP:     cutil.GetPtr(uuid.New()),
+			name:   "unknown provider returns zero counts",
+			filter: NewProviderVisibleIPBlockFilter(uuid.New()),
+			want:   statusCounts(0),
 		},
 		{
-			name: "get ipblock status count with no filter ipblock returns success",
-			fields: fields{
-				dbSession: dbSession,
-			},
-			args: args{
-				ctx: context.Background(),
-			},
-			wantErr:   nil,
-			wantCount: 2,
-			wantStatusMap: map[string]int{
-				IPBlockStatusDeleting:     0,
-				IPBlockStatusError:        0,
-				IPBlockStatusReady:        0,
-				IPBlockStatusPending:      0,
-				IPBlockStatusProvisioning: 2,
-				"total":                   2,
-			},
-			wantEmpty: false,
+			name: "no filter counts every source",
+			want: statusCounts(3),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isd := IPBlockSQLDAO{
-				dbSession: tt.fields.dbSession,
-			}
-			got, err := isd.GetCountByStatus(tt.args.ctx, nil, tt.reqIP, tt.reqSite, tt.reqTenant)
-			if tt.wantErr != nil {
-				assert.ErrorAs(t, err, &tt.wantErr)
-				return
-			}
-			if tt.wantEmpty {
-				assert.EqualValues(t, got["total"], 0)
-			}
-			if err == nil && !tt.wantEmpty {
-				assert.EqualValues(t, tt.wantStatusMap, got)
-				if len(got) > 0 {
-					assert.EqualValues(t, got[IPBlockStatusProvisioning], tt.wantCount)
-					assert.EqualValues(t, got["total"], tt.wantCount)
-				}
-			}
+			got, err := ipsd.GetCountByStatus(context.Background(), nil, tt.filter)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 
 			if tt.verifyChildSpanner {
 				span := otrace.SpanFromContext(ctx)

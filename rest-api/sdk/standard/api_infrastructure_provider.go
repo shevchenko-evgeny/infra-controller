@@ -154,7 +154,7 @@ func (r ApiGetCurrentInfrastructureProviderStatsRequest) Execute() (*Infrastruct
 /*
 GetCurrentInfrastructureProviderStats Retrieve Stats for current Infrastructure Provider
 
-Retrieve stats for current Infrastructure Provider.
+Retrieve statistics for the current Infrastructure Provider. IP Block totals exclude private tenant-managed `SitePrefix` records imported from Core.
 
 User must have authorization role with `PROVIDER_ADMIN` suffix.
 

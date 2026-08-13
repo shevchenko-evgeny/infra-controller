@@ -249,6 +249,7 @@ func TestVpcPrefixHandler_Create(t *testing.T) {
 	parentPrefFG, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, ipbFG.Prefix, ipbFG.PrefixLength, ipbFG.RoutingType, ipbFG.InfrastructureProviderID.String(), ipbFG.SiteID.String())
 	assert.Nil(t, err)
 	assert.NotNil(t, parentPrefFG)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site, ip, tenant1, "192.171.0.0", 16, cdbm.IPBlockStatusReady, ipu)
 
 	okBody, err := json.Marshal(model.APIVpcPrefixCreateRequest{Name: "ok1", VpcID: vpc1.ID.String(), IPBlockID: cutil.GetPtr(ipb1.ID.String()), PrefixLength: 24})
 	assert.Nil(t, err)
@@ -276,6 +277,8 @@ func TestVpcPrefixHandler_Create(t *testing.T) {
 	errBodyBadVpcNotFNN, err := json.Marshal(model.APIVpcPrefixCreateRequest{Name: "ok1", VpcID: vpc8.ID.String(), IPBlockID: cutil.GetPtr(ipb1.ID.String()), PrefixLength: 24})
 	assert.Nil(t, err)
 	errBodyBadIPBlockID, err := json.Marshal(model.APIVpcPrefixCreateRequest{Name: "ok1", VpcID: vpc1.ID.String(), IPBlockID: cutil.GetPtr(uuid.New().String()), PrefixLength: 24})
+	assert.Nil(t, err)
+	errBodyTenantSitePrefixID, err := json.Marshal(model.APIVpcPrefixCreateRequest{Name: "private-prefix", VpcID: vpc1.ID.String(), IPBlockID: cutil.GetPtr(tenantSitePrefix.ID.String()), PrefixLength: 24})
 	assert.Nil(t, err)
 	errBodyNoIPv4, err := json.Marshal(model.APIVpcPrefixCreateRequest{Name: "ok1", VpcID: vpc1.ID.String(), PrefixLength: 25})
 	assert.Nil(t, err)
@@ -394,6 +397,14 @@ func TestVpcPrefixHandler_Create(t *testing.T) {
 			name:           "error when ipblock in request doesnt exist",
 			reqOrgName:     tnOrg1,
 			reqBody:        string(errBodyBadIPBlockID),
+			user:           tnu,
+			expectedErr:    true,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Tenant SitePrefix cannot back a VPC Prefix",
+			reqOrgName:     tnOrg1,
+			reqBody:        string(errBodyTenantSitePrefixID),
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,

@@ -748,15 +748,15 @@ func TestGetIPBlockFromIDString(t *testing.T) {
 	site := testCommonBuildSite(t, dbSession, ip, "testSite", user)
 	assert.NotNil(t, site)
 	tenant := testCommonBuildTenant(t, dbSession, "testTenant", ipOrg1, user)
-	ipBlock := testCommonBuildIPBlock(t, dbSession, "testIPB", site, ip, &tenant.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, cdbm.IPBlockStatusReady, user)
+	legacyAllocation := testCommonBuildIPBlock(t, dbSession, "testIPB", site, ip, &tenant.ID, cdbm.IPBlockRoutingTypeDatacenterOnly, "192.168.1.0", 24, cdbm.IPBlockProtocolVersionV4, cdbm.IPBlockStatusReady, user)
 	tests := []struct {
 		name      string
 		ipBlockID string
 		expectErr bool
 	}{
 		{
-			name:      "success when Id exists",
-			ipBlockID: ipBlock.ID.String(),
+			name:      "returns a legacy Allocation whose Origin is empty",
+			ipBlockID: legacyAllocation.ID.String(),
 			expectErr: false,
 		},
 		{
@@ -772,7 +772,8 @@ func TestGetIPBlockFromIDString(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := GetIPBlockFromIDString(ctx, nil, tc.ipBlockID, dbSession)
+			filter := cdbm.NewAllocationBackedIPBlockFilter(tenant.ID)
+			s, err := GetIPBlockFromIDString(ctx, nil, tc.ipBlockID, filter, dbSession)
 			assert.Equal(t, tc.expectErr, err != nil)
 			if err == nil {
 				assert.NotNil(t, s)

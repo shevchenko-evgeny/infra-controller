@@ -209,6 +209,7 @@ func TestSubnetHandler_Create(t *testing.T) {
 	parentPrefFG, err := ipam.CreateIpamEntryForIPBlock(ctx, ipamStorage, ipbFG.Prefix, ipbFG.PrefixLength, ipbFG.RoutingType, ipbFG.InfrastructureProviderID.String(), ipbFG.SiteID.String())
 	assert.Nil(t, err)
 	assert.NotNil(t, parentPrefFG)
+	tenantSitePrefix := testIPBlockBuildTenantSitePrefix(t, dbSession, "private-site-prefix", site, ip, tenant1, "192.171.0.0", 16, cdbm.IPBlockStatusReady, ipu)
 	prefixLen := 24
 	okBody, err := json.Marshal(model.APISubnetCreateRequest{Name: "ok1", Description: cutil.GetPtr(""), VpcID: vpc1.ID.String(), IPv4BlockID: cutil.GetPtr(ipb1.ID.String()), PrefixLength: prefixLen})
 	assert.Nil(t, err)
@@ -237,6 +238,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 	errBodyBadVpctype, err := json.Marshal(model.APISubnetCreateRequest{Name: "ok1", Description: cutil.GetPtr(""), VpcID: vpc8.ID.String(), IPv4BlockID: cutil.GetPtr(ipb1.ID.String()), PrefixLength: prefixLen})
 	assert.Nil(t, err)
 	errBodyBadIPv4BlockID, err := json.Marshal(model.APISubnetCreateRequest{Name: "ok1", Description: cutil.GetPtr(""), VpcID: vpc1.ID.String(), IPv4BlockID: cutil.GetPtr(uuid.New().String()), PrefixLength: prefixLen})
+	assert.Nil(t, err)
+	errBodyTenantSitePrefixID, err := json.Marshal(model.APISubnetCreateRequest{Name: "private-prefix", Description: cutil.GetPtr(""), VpcID: vpc1.ID.String(), IPv4BlockID: cutil.GetPtr(tenantSitePrefix.ID.String()), PrefixLength: prefixLen})
 	assert.Nil(t, err)
 	errBodyNoIPv4, err := json.Marshal(model.APISubnetCreateRequest{Name: "ok1", Description: cutil.GetPtr(""), VpcID: vpc1.ID.String(), PrefixLength: prefixLen})
 	assert.Nil(t, err)
@@ -366,6 +369,14 @@ func TestSubnetHandler_Create(t *testing.T) {
 			name:           "error when ipv4 block in request doesnt exist",
 			reqOrgName:     tnOrg1,
 			reqBody:        string(errBodyBadIPv4BlockID),
+			user:           tnu,
+			expectedErr:    true,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Tenant SitePrefix cannot back a Subnet",
+			reqOrgName:     tnOrg1,
+			reqBody:        string(errBodyTenantSitePrefixID),
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
