@@ -292,7 +292,7 @@ type APITenantIdentityJWKS struct {
 // Both fields are optional: omitting organizationId targets all orgs; dryRun validates
 // without writing.
 type APIReencryptTenantIdentitySecretsRequest struct {
-	OrganizationID *string `json:"organizationId"`
+	OrganizationID *string `json:"organizationId,omitempty"`
 	DryRun         bool    `json:"dryRun"`
 }
 

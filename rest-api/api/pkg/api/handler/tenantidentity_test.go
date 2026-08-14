@@ -249,7 +249,7 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 
 	echoServer := echo.New()
 	handler := NewReencryptTenantIdentitySecretsHandler(dbSession, siteClientPool)
-	performRequest := func(apiRequest model.APIReencryptTenantIdentitySecretsRequest) *httptest.ResponseRecorder {
+	performRequest := func(apiRequest model.APIReencryptTenantIdentitySecretsRequest) (*httptest.ResponseRecorder, []byte) {
 		requestBody, marshalErr := json.Marshal(apiRequest)
 		require.NoError(t, marshalErr)
 
@@ -262,11 +262,12 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 		echoContext.Set("user", providerUser)
 
 		require.NoError(t, handler.Handle(echoContext))
-		return recorder
+		return recorder, requestBody
 	}
 
 	t.Run("omitted organization targets all organizations", func(t *testing.T) {
-		recorder := performRequest(model.APIReencryptTenantIdentitySecretsRequest{DryRun: true})
+		recorder, requestBody := performRequest(model.APIReencryptTenantIdentitySecretsRequest{DryRun: true})
+		assert.JSONEq(t, `{"dryRun":true}`, string(requestBody))
 		require.Equal(t, http.StatusOK, recorder.Code, "body=%s", recorder.Body.String())
 		assert.Equal(t, corev1.Forge_ReencryptTenantIdentitySecrets_FullMethodName, proxiedRequest.FullMethod)
 
@@ -283,7 +284,7 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 	})
 
 	t.Run("matching organization is forwarded", func(t *testing.T) {
-		recorder := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
+		recorder, _ := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
 			OrganizationID: cutil.GetPtr(providerOrg),
 		})
 		require.Equal(t, http.StatusOK, recorder.Code, "body=%s", recorder.Body.String())
@@ -294,7 +295,7 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 	})
 
 	t.Run("different organization is rejected before proxy dispatch", func(t *testing.T) {
-		recorder := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
+		recorder, _ := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
 			OrganizationID: cutil.GetPtr("different-org"),
 		})
 		assert.Equal(t, http.StatusBadRequest, recorder.Code)
