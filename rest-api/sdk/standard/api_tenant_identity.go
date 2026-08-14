@@ -1524,8 +1524,14 @@ site-operator operation, not a per-tenant one.
 User must have authorization role with `PROVIDER_ADMIN` suffix in the URL `{org}`.
 
 Omit `organizationId` to re-wrap every org's secrets on the Site;
-set it to scope the operation to a single org. Set `dryRun` to
-decrypt and validate without writing any changes.
+set it to `{org}` to scope the operation to that organization. A
+different value returns `400 Bad Request`. Set `dryRun` to decrypt
+and validate without writing any changes.
+
+Returns `404 Not Found` when `{org}` has no Infrastructure Provider,
+or when a scoped organization has no tenant identity configuration on
+the Site. An unknown, invalid, or unregistered `siteID` returns
+`400 Bad Request`.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
@@ -1654,6 +1660,17 @@ func (a *TenantIdentityAPIService) ReencryptTenantIdentitySecretsExecute(r ApiRe
 			return localVarReturnValue, localVarHTTPResponse, newErr
 		}
 		if localVarHTTPResponse.StatusCode == 503 {
+			var v NICoAPIError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 504 {
 			var v NICoAPIError
 			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
 			if err != nil {

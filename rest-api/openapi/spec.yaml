@@ -14831,8 +14831,14 @@ paths:
         User must have authorization role with `PROVIDER_ADMIN` suffix in the URL `{org}`.
 
         Omit `organizationId` to re-wrap every org's secrets on the Site;
-        set it to scope the operation to a single org. Set `dryRun` to
-        decrypt and validate without writing any changes.
+        set it to `{org}` to scope the operation to that organization. A
+        different value returns `400 Bad Request`. Set `dryRun` to decrypt
+        and validate without writing any changes.
+
+        Returns `404 Not Found` when `{org}` has no Infrastructure Provider,
+        or when a scoped organization has no tenant identity configuration on
+        the Site. An unknown, invalid, or unregistered `siteID` returns
+        `400 Bad Request`.
       requestBody:
         required: true
         content:
@@ -14853,10 +14859,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundError'
         '500':
-          description: Internal server error while loading the Tenant or Site, contacting the Core gRPC API, starting the reencrypt workflow, or after the workflow timed out and was terminated.
+          description: Internal server error while loading the Infrastructure Provider or Site, retrieving the Site Temporal client, dispatching the Core proxy workflow, or decoding its response.
           $ref: '#/components/responses/GenericHttpError'
         '503':
           $ref: '#/components/responses/TenantIdentityCoreUnavailable'
+        '504':
+          description: The Core proxy workflow did not return a result before its execution or caller deadline.
+          $ref: '#/components/responses/GenericHttpError'
   '/v2/org/{org}/nico/site/{siteID}/.well-known/jwks.json':
     parameters:
       - schema:
@@ -28421,8 +28430,9 @@ components:
         organizationId:
           type: string
           description: |-
-            If set, only this org's secrets are re-wrapped; otherwise every
-            row in the Site's tenant identity store is processed.
+            If set, this must match the URL `{org}` and only that organization's
+            secrets are re-wrapped; otherwise every row in the Site's tenant
+            identity store is processed.
         dryRun:
           type: boolean
           description: When true, decrypt and validate only; no changes are written.
