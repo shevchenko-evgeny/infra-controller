@@ -22,7 +22,7 @@ var _ MappedNullable = &TenantIdentityReencryptSecretsRequest{}
 
 // TenantIdentityReencryptSecretsRequest Request to re-wrap stored tenant identity secrets with the Site's current master encryption key (KEK rotation).
 type TenantIdentityReencryptSecretsRequest struct {
-	// If set, this must match the URL `{org}` and only that organization's secrets are re-wrapped; otherwise every row in the Site's tenant identity store is processed.
+	// If set, this identifies a tenant organization that must have an allocation and tenant identity configuration on the Site; only that organization's secrets are re-wrapped. The URL `{org}` separately identifies the provider authorizing the operation. If omitted, every row in the Site's tenant identity store is processed.
 	OrganizationId *string `json:"organizationId,omitempty"`
 	// When true, decrypt and validate only; no changes are written.
 	DryRun *bool `json:"dryRun,omitempty"`

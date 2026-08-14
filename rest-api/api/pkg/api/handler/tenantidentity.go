@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog"
 	temporalEnums "go.temporal.io/api/enums/v1"
@@ -26,6 +27,7 @@ import (
 	auth "github.com/NVIDIA/infra-controller/rest-api/auth/pkg/authorization"
 	cutil "github.com/NVIDIA/infra-controller/rest-api/common/pkg/util"
 	cdb "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db"
+	cdbm "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db/model"
 	corev1 "github.com/NVIDIA/infra-controller/rest-api/proto/core/gen/v1"
 	"github.com/NVIDIA/infra-controller/rest-api/workflow/pkg/queue"
 )
@@ -1040,13 +1042,13 @@ func NewReencryptTenantIdentitySecretsHandler(dbSession *cdb.Session, scp *sc.Cl
 
 // Handle godoc
 // @Summary Reencrypt Tenant Identity Secrets
-// @Description Re-wrap tenant_identity_config ciphertext with the site's current master encryption key (KEK rotation). Provider-admin scoped; omit organizationId to target all orgs.
+// @Description Re-wrap tenant_identity_config ciphertext with the site's current master encryption key (KEK rotation). Provider-admin scoped; the URL org identifies the provider. Omit organizationId to target all orgs, or set it to a tenant org that has an allocation and tenant identity configuration on the Site.
 // @Tags TenantIdentity
 // @Accept json
 // @Produce json
 // @Security ApiKeyAuth
-// @Param org path string true "Name of NGC organization"
-// @Param siteID path string true "ID of Site"
+// @Param org path string true "Name of provider organization"
+// @Param siteID path string true "ID of target Site"
 // @Param message body model.APIReencryptTenantIdentitySecretsRequest true "Reencrypt Tenant Identity Secrets request"
 // @Success 200 {object} model.APIReencryptTenantIdentitySecretsResponse
 // @Failure 503 {object} util.APIError
@@ -1073,10 +1075,6 @@ func (rtish ReencryptTenantIdentitySecretsHandler) Handle(c echo.Context) error 
 		logger.Warn().Err(validationErr).Msg("error validating Reencrypt Tenant Identity Secrets request data")
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Error validating Reencrypt Tenant Identity Secrets request data", validationErr)
 	}
-	if apiRequest.OrganizationID != nil && *apiRequest.OrganizationID != org {
-		logger.Warn().Str("organizationID", *apiRequest.OrganizationID).Msg("organizationId in request does not match request org")
-		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "organizationId specified in request does not match request org", nil)
-	}
 
 	temporalClient, resolvedSiteID, apiErr := common.AuthorizeProviderSiteForCore(common.AuthorizeProviderSiteForCoreInput{
 		Ctx:       ctx,
@@ -1089,6 +1087,32 @@ func (rtish ReencryptTenantIdentitySecretsHandler) Handle(c echo.Context) error 
 	})
 	if apiErr != nil {
 		return cutil.NewAPIErrorResponse(c, apiErr.Code, apiErr.Message, apiErr.Data)
+	}
+
+	if apiRequest.OrganizationID != nil {
+		tenant, err := common.GetTenantForOrg(ctx, nil, rtish.dbSession, *apiRequest.OrganizationID)
+		if err != nil {
+			if errors.Is(err, common.ErrOrgTenantNotFound) {
+				return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Could not find Tenant for organizationId specified in request data", nil)
+			}
+			logger.Error().Err(err).Str("Tenant Org", *apiRequest.OrganizationID).Msg("error retrieving Tenant for re-encryption scope")
+			return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Tenant", nil)
+		}
+
+		resolvedSiteUUID, err := uuid.Parse(resolvedSiteID)
+		if err != nil {
+			logger.Error().Err(err).Str("Site ID", resolvedSiteID).Msg("resolved Site has an invalid ID")
+			return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to validate Tenant access to Site", nil)
+		}
+
+		_, err = cdbm.NewTenantSiteDAO(rtish.dbSession).GetByTenantIDAndSiteID(ctx, nil, tenant.ID, resolvedSiteUUID, nil)
+		if err != nil {
+			if errors.Is(err, cdb.ErrDoesNotExist) {
+				return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Tenant organization does not have an allocation on the Site", nil)
+			}
+			logger.Error().Err(err).Str("Tenant Org", tenant.Org).Str("Site ID", resolvedSiteID).Msg("error retrieving Tenant Site association")
+			return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to validate Tenant access to Site", nil)
+		}
 	}
 
 	var protoResponse corev1.ReencryptTenantIdentitySecretsResponse

@@ -14810,14 +14810,14 @@ paths:
         name: org
         in: path
         required: true
-        description: Name of the Org
+        description: Name of the provider organization authorizing the operation
       - schema:
           type: string
           format: uuid
         name: siteID
         in: path
         required: true
-        description: ID of the Site
+        description: ID of the target Site
     post:
       summary: Reencrypt Tenant Identity Secrets
       tags:
@@ -14830,15 +14830,17 @@ paths:
 
         User must have authorization role with `PROVIDER_ADMIN` suffix in the URL `{org}`.
 
-        Omit `organizationId` to re-wrap every org's secrets on the Site;
-        set it to `{org}` to scope the operation to that organization. A
-        different value returns `400 Bad Request`. Set `dryRun` to decrypt
-        and validate without writing any changes.
+        The URL `{org}` identifies the provider whose admin authorizes the
+        operation. Omit `organizationId` to re-wrap every org's secrets on
+        the Site, or set it to a tenant organization that has an allocation
+        on the Site. Set `dryRun` to decrypt and validate without writing any
+        changes.
 
-        Returns `404 Not Found` when `{org}` has no Infrastructure Provider,
-        or when a scoped organization has no tenant identity configuration on
-        the Site. An unknown, invalid, or unregistered `siteID` returns
-        `400 Bad Request`.
+        Returns `400 Bad Request` when a scoped tenant organization does not
+        exist or has no allocation on the Site. Returns `404 Not Found` when
+        `{org}` has no Infrastructure Provider, or when a scoped organization
+        has no tenant identity configuration on the Site. An unknown, invalid,
+        or unregistered `siteID` returns `400 Bad Request`.
       requestBody:
         required: true
         content:
@@ -28430,9 +28432,11 @@ components:
         organizationId:
           type: string
           description: |-
-            If set, this must match the URL `{org}` and only that organization's
-            secrets are re-wrapped; otherwise every row in the Site's tenant
-            identity store is processed.
+            If set, this identifies a tenant organization that must have an
+            allocation and tenant identity configuration on the Site; only that
+            organization's secrets are re-wrapped. The URL `{org}` separately
+            identifies the provider authorizing the operation. If omitted, every
+            row in the Site's tenant identity store is processed.
         dryRun:
           type: boolean
           description: When true, decrypt and validate only; no changes are written.

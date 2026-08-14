@@ -1523,19 +1523,21 @@ site-operator operation, not a per-tenant one.
 
 User must have authorization role with `PROVIDER_ADMIN` suffix in the URL `{org}`.
 
-Omit `organizationId` to re-wrap every org's secrets on the Site;
-set it to `{org}` to scope the operation to that organization. A
-different value returns `400 Bad Request`. Set `dryRun` to decrypt
-and validate without writing any changes.
+The URL `{org}` identifies the provider whose admin authorizes the
+operation. Omit `organizationId` to re-wrap every org's secrets on
+the Site, or set it to a tenant organization that has an allocation
+on the Site. Set `dryRun` to decrypt and validate without writing any
+changes.
 
-Returns `404 Not Found` when `{org}` has no Infrastructure Provider,
-or when a scoped organization has no tenant identity configuration on
-the Site. An unknown, invalid, or unregistered `siteID` returns
-`400 Bad Request`.
+Returns `400 Bad Request` when a scoped tenant organization does not
+exist or has no allocation on the Site. Returns `404 Not Found` when
+`{org}` has no Infrastructure Provider, or when a scoped organization
+has no tenant identity configuration on the Site. An unknown, invalid,
+or unregistered `siteID` returns `400 Bad Request`.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
-	@param org Name of the Org
-	@param siteID ID of the Site
+	@param org Name of the provider organization authorizing the operation
+	@param siteID ID of the target Site
 	@return ApiReencryptTenantIdentitySecretsRequest
 */
 func (a *TenantIdentityAPIService) ReencryptTenantIdentitySecrets(ctx context.Context, org string, siteID string) ApiReencryptTenantIdentitySecretsRequest {

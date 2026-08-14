@@ -162,7 +162,7 @@ Per-org signing private keys and token-delegation credentials are encrypted at r
 
 1. Add the new key to site secrets (`machine_identity.encryption_keys.kv2`); **keep** the old key until step 4 completes.
 2. Set `current_encryption_key_id = "kv2"` in site config and **restart** the NICo API (not hot-reloaded).
-3. Call **`ReencryptTenantIdentitySecrets`** with **`dry_run: true`** (optionally scoped to one `organization_id`), then apply with **`dry_run: false`**.
+3. Call **`ReencryptTenantIdentitySecrets`** with **`dry_run: true`** (optionally scoped to one `organization_id` that already has tenant identity configuration), then apply with **`dry_run: false`**.
 4. Verify dry-run shows all rows **`rows_skipped_all_on_target`** / **`fields_skipped_on_target`** only; then optionally remove the retired key from secrets.
 
 Fields re-wrapped per org (when present): `encrypted_signing_key_1`, `encrypted_signing_key_2`, `encrypted_auth_method_config`.
@@ -395,7 +395,7 @@ A new table will be created to store tenant signing key pairs and optional token
 
 The JWT spec and vault related configs are passed to the NICo API server during startup through `site_config.toml` config file.
 
-```bash
+```toml
 # In site config file (e.g., site_config.toml)
 [machine_identity]
 enabled = true
@@ -508,7 +508,7 @@ Both json and plaintext responses are supported depending on the Accept header. 
 
 Request:
 
-```bash
+```http
 GET http://169.254.169.254:80/latest/meta-data/identity?aud=urlencode(spiffe://your.target.service.com)&aud=urlencode(spiffe://extra.audience.com)
 Accept: application/json (or omitted)
 Metadata: true
@@ -516,7 +516,7 @@ Metadata: true
 
 Response:
 
-```bash
+```http
 200 OK
 Content-Type: application/json
 Content-Length: ...
@@ -530,7 +530,7 @@ Content-Length: ...
 
 Request:
 
-```bash
+```http
 GET http://169.254.169.254:80/latest/meta-data/identity?aud=urlencode(spiffe://your.target.service.com)&aud=urlencode(spiffe://extra.audience.com)
 Accept: text/plain
 Metadata: true
@@ -538,7 +538,7 @@ Metadata: true
 
 Response:
 
-```bash
+```http
 200 OK
 Content-Type: text/plain
 Content-Length: ...
@@ -557,7 +557,7 @@ These APIs manage per-org identity configuration that controls how NICo issues J
 
 **PUT when global is disabled:** If the global `enabled` setting in site config is `false`, PUT returns `503 Service Unavailable` with a message indicating that machine identity must be enabled at the site level first. This enforces the deployment order: global config must be enabled before per-org config can be created or updated.
 
-```bash
+```http
 PUT tenant-identity/config
 GET tenant-identity/config
 DELETE tenant-identity/config
@@ -654,7 +654,7 @@ Site operators use this admin RPC after changing **`current_encryption_key_id`**
 
 **Auth:** The NICo-rest endpoint requires the **provider-admin** role (validated by NICo-rest before dispatching to the site); the direct gRPC path uses Forge Admin CLI internal RBAC. This is a site-wide administrative operation, **not** a per-tenant call — it is deliberately gated to provider admins rather than tenant admins.
 
-**Scope:** If **`organizationId`** is set through NICo-rest, it must match the URL `{org-id}`, and that org must have tenant identity configuration on the Site. If omitted, all rows in `tenant_identity_config` are examined in stable order. (The re-wrap target key comes from the running site API config, not the request; `organizationId` selects *which* rows, not the key.)
+**Scope:** The NICo-rest URL `{org-id}` identifies the provider whose admin authorizes the operation, while the URL `{site-id}` selects the Site. If **`organizationId`** (REST) or **`organization_id`** (gRPC) is set, only that tenant org is processed, and it must have tenant identity configuration on the Site. NICo-rest additionally requires the tenant org to have an allocation on the selected Site. If the field is omitted, all rows in `tenant_identity_config` on that Site are examined in stable order. (The re-wrap target key comes from the running site API config, not the request; the organization field selects *which* rows, not the key.)
 
 **Dry run:** When **`dryRun`** is **`true`**, decrypt and validate only; **no DB writes**. Counters still reflect what would change. `dryRun` is exposed on both surfaces so operators can preview blast radius and confirm `rowsFailed == 0` before applying a bulk re-wrap of secret material (see the runbook's dry-run → apply → verify flow).
 
@@ -725,7 +725,7 @@ These APIs let NICo tenants register a token exchange callback endpoint (RFC 869
 
 **PUT token-delegation prerequisites:** Same as PUT tenant-identity/config, global `enabled` must be `true` and global config must be complete. If not, PUT returns `503 Service Unavailable`. Token delegation also requires org identity config to exist (the JWT sent to the exchange is built from it); if the org has no identity config, PUT token-delegation returns `404` or `503`.
 
-```bash
+```http
 PUT tenant-identity/token-delegation
 GET tenant-identity/token-delegation
 DELETE tenant-identity/token-delegation
@@ -733,7 +733,7 @@ DELETE tenant-identity/token-delegation
 
 Request:
 
-```bash
+```http
 PUT https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/tenant-identity/token-delegation
 {
   "tokenEndpoint": "https://auth.acme.com/oauth2/token",
@@ -775,7 +775,7 @@ Make a request to the `token_endpoint` registered via the `tenant-identity/token
 
 **Request**:
 
-```bash
+```http
 POST https://tenant.example.com/oauth2/token
 Content-Type: application/x-www-form-urlencoded
 
@@ -786,7 +786,7 @@ grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange
 
 **Response**:
 
-```bash
+```http
 200 OK
 Content-Type: application/json
 Content-Length: ...
@@ -805,7 +805,7 @@ The exchange service serves an [RFC 8693](https://datatracker.ietf.org/doc/html/
 
 ##### 3.5.1.4 SPIFFE JWKS Endpoint
 
-```bash
+```http
 GET
 https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/.well-known/jwks.json
 
@@ -826,7 +826,7 @@ https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/.well-known/jwks.json
 
 Discovery reuses common OpenID Provider field names where helpful, but **NICo does not issue OIDC `id_token`s**—only **JWT bearer** access tokens (machine identity). Verifiers should use `jwks_uri` (or `spiffe_jwks_uri` for SPIFFE-style `use`) and the **`alg`** (and `kid`) on keys from GetJWKS; `id_token_signing_alg_values_supported` stays empty.
 
-```bash
+```http
 GET
 https://{nico-rest}/v2/org/{org-id}/nico/site/{site-id}/.well-known/openid-configuration
 
@@ -1047,7 +1047,8 @@ message TenantIdentityConfigResponse {
 }
 
 message ReencryptTenantIdentitySecretsRequest {
-  // If set, only this org; otherwise all rows in tenant_identity_config.
+  // If set, re-wrap only this org; it must have tenant identity configuration.
+  // Otherwise, re-wrap all rows in tenant_identity_config.
   optional string organization_id = 1;
   // Decrypt and validate only; no DB writes.
   bool dry_run = 2;

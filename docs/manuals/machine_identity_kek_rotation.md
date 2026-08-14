@@ -80,7 +80,7 @@ Restart `nico-api` (this setting is **not** hot-reloaded). New encrypts (new org
 
 ### Step 3 — Dry-run re-wrap
 
-> The examples below use direct gRPC. NICo-rest accepts the equivalent `dryRun` and optional `organizationId` fields in camelCase; a supplied `organizationId` must match the URL `{org}`.
+> The examples below use direct gRPC. For NICo-rest, use the JSON field names `dryRun` and `organizationId`; organization values are passed unchanged. The URL `{org}` identifies the provider, while a supplied `organizationId` identifies a tenant that must have an allocation and tenant identity configuration on the selected Site. NICo-rest returns Bad Request when the tenant is unknown or has no allocation on the selected Site. On either surface, a valid scoped tenant without tenant identity configuration returns Not Found.
 
 Call **`ReencryptTenantIdentitySecrets`** with `dry_run: true`. Optionally scope to one org.
 

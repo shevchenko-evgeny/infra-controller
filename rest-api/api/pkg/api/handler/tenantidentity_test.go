@@ -206,12 +206,28 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 
 	require.NoError(t, dbSession.DB.ResetModel(context.Background(), (*cdbm.User)(nil)))
 	require.NoError(t, dbSession.DB.ResetModel(context.Background(), (*cdbm.InfrastructureProvider)(nil)))
+	require.NoError(t, dbSession.DB.ResetModel(context.Background(), (*cdbm.Tenant)(nil)))
 	require.NoError(t, dbSession.DB.ResetModel(context.Background(), (*cdbm.Site)(nil)))
+	require.NoError(t, dbSession.DB.ResetModel(context.Background(), (*cdbm.TenantSite)(nil)))
 
-	const providerOrg = "test-reencrypt-provider-org"
+	const (
+		providerOrg        = "test-reencrypt-provider-org"
+		tenantOrg          = "test-reencrypt-tenant-org"
+		otherSiteTenantOrg = "test-reencrypt-other-site-tenant-org"
+		unknownTenantOrg   = "test-reencrypt-unknown-tenant-org"
+	)
 	providerUser := testVPCBuildUser(t, dbSession, "test-reencrypt-provider-user", providerOrg, []string{auth.ProviderAdminRole})
 	infraProvider := testVPCSiteBuildInfrastructureProvider(t, dbSession, "test-reencrypt-ip", providerOrg, providerUser)
 	site := testVPCBuildSite(t, dbSession, infraProvider, "test-reencrypt-site", false, false, cdbm.SiteStatusRegistered, providerUser)
+	otherSite := testVPCBuildSite(t, dbSession, infraProvider, "test-reencrypt-other-site", false, false, cdbm.SiteStatusRegistered, providerUser)
+
+	tenantUser := testVPCBuildUser(t, dbSession, "test-reencrypt-tenant-user", tenantOrg, []string{auth.TenantAdminRole})
+	tenant := testVPCBuildTenant(t, dbSession, "test-reencrypt-tenant", tenantOrg, tenantUser)
+	common.TestBuildTenantSite(t, dbSession, tenant, site, providerUser)
+
+	otherSiteTenantUser := testVPCBuildUser(t, dbSession, "test-reencrypt-other-site-tenant-user", otherSiteTenantOrg, []string{auth.TenantAdminRole})
+	otherSiteTenant := testVPCBuildTenant(t, dbSession, "test-reencrypt-other-site-tenant", otherSiteTenantOrg, otherSiteTenantUser)
+	common.TestBuildTenantSite(t, dbSession, otherSiteTenant, otherSite, providerUser)
 
 	responseJSON, err := protojson.Marshal(&corev1.ReencryptTenantIdentitySecretsResponse{
 		RowsExamined:           3,
@@ -283,23 +299,32 @@ func TestReencryptTenantIdentitySecretsHandler_Handle(t *testing.T) {
 		assert.Equal(t, "key-2", apiResponse.CurrentEncryptionKeyID)
 	})
 
-	t.Run("matching organization is forwarded", func(t *testing.T) {
+	t.Run("tenant with allocation on selected site is forwarded", func(t *testing.T) {
 		recorder, _ := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
-			OrganizationID: cutil.GetPtr(providerOrg),
+			OrganizationID: cutil.GetPtr(tenantOrg),
 		})
 		require.Equal(t, http.StatusOK, recorder.Code, "body=%s", recorder.Body.String())
 
 		var coreRequest corev1.ReencryptTenantIdentitySecretsRequest
 		require.NoError(t, protojson.Unmarshal(proxiedRequest.RequestJSON, &coreRequest))
-		assert.Equal(t, providerOrg, coreRequest.GetOrganizationId())
+		assert.Equal(t, tenantOrg, coreRequest.GetOrganizationId())
 	})
 
-	t.Run("different organization is rejected before proxy dispatch", func(t *testing.T) {
+	t.Run("unknown tenant organization is rejected before proxy dispatch", func(t *testing.T) {
 		recorder, _ := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
-			OrganizationID: cutil.GetPtr("different-org"),
+			OrganizationID: cutil.GetPtr(unknownTenantOrg),
 		})
 		assert.Equal(t, http.StatusBadRequest, recorder.Code)
-		assert.Contains(t, recorder.Body.String(), "organizationId specified in request does not match request org")
+		assert.Contains(t, recorder.Body.String(), "Could not find Tenant for organizationId specified in request data")
+		assert.Equal(t, 2, countMockCalls(&temporalClient.Mock, "ExecuteWorkflow"))
+	})
+
+	t.Run("tenant allocated only on another site is rejected before proxy dispatch", func(t *testing.T) {
+		recorder, _ := performRequest(model.APIReencryptTenantIdentitySecretsRequest{
+			OrganizationID: cutil.GetPtr(otherSiteTenantOrg),
+		})
+		assert.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "Tenant organization does not have an allocation on the Site")
 		assert.Equal(t, 2, countMockCalls(&temporalClient.Mock, "ExecuteWorkflow"))
 	})
 

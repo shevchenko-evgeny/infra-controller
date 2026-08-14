@@ -288,22 +288,38 @@ func TestAPITenantIdentityConfig_FromResponseProto(t *testing.T) {
 	})
 }
 
-// TestAPIReencryptTenantIdentitySecretsRequest_Validate verifies both the omitted all-organizations scope and a supplied organization remain syntactically valid for handler-level scope validation.
+// TestAPIReencryptTenantIdentitySecretsRequest_Validate verifies omission targets all organizations and a supplied organization must be non-empty.
 func TestAPIReencryptTenantIdentitySecretsRequest_Validate(t *testing.T) {
 	tests := []struct {
-		name string
-		req  APIReencryptTenantIdentitySecretsRequest
+		name    string
+		req     APIReencryptTenantIdentitySecretsRequest
+		wantErr string
 	}{
 		{name: "organization omitted"},
-		{name: "organization supplied", req: APIReencryptTenantIdentitySecretsRequest{
-			OrganizationID: cutil.GetPtr("acme-corp"),
-			DryRun:         true,
-		}},
+		{
+			name: "organization supplied",
+			req: APIReencryptTenantIdentitySecretsRequest{
+				OrganizationID: cutil.GetPtr("tenant-corp"),
+				DryRun:         true,
+			},
+		},
+		{
+			name: "organization is empty",
+			req: APIReencryptTenantIdentitySecretsRequest{
+				OrganizationID: cutil.GetPtr(""),
+			},
+			wantErr: "organizationId must not be empty",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.NoError(t, tt.req.Validate())
+			err := tt.req.Validate()
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

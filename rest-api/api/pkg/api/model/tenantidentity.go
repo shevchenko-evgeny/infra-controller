@@ -296,10 +296,15 @@ type APIReencryptTenantIdentitySecretsRequest struct {
 	DryRun         bool    `json:"dryRun"`
 }
 
-// Validate enforces the REST-layer contract. Both fields are optional and have no
-// context-free constraints; the handler verifies a supplied organizationId against the URL org.
+// Validate enforces the request-local REST contract. Omitting organizationId targets
+// all organizations; when supplied, it must be non-empty. The handler validates that
+// the tenant organization has access to the selected Site.
 func (req APIReencryptTenantIdentitySecretsRequest) Validate() error {
-	return nil
+	return validation.ValidateStruct(&req,
+		validation.Field(&req.OrganizationID,
+			validation.When(req.OrganizationID != nil,
+				validation.Required.Error("organizationId must not be empty"))),
+	)
 }
 
 // ToProto converts the request to its gRPC form. organizationId comes from the body
