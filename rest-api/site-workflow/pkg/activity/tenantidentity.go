@@ -290,32 +290,3 @@ func (m *ManageTenantIdentity) GetOpenIDConfigurationFromSite(
 	logger.Info().Msg("Completed activity")
 	return response, nil
 }
-
-// ReencryptTenantIdentitySecretsOnSite is an activity to re-wrap Tenant Identity secrets with the
-// site's current master encryption key (KEK rotation) using Core gRPC API.
-func (m *ManageTenantIdentity) ReencryptTenantIdentitySecretsOnSite(
-	ctx context.Context,
-	request *corev1.ReencryptTenantIdentitySecretsRequest,
-) (*corev1.ReencryptTenantIdentitySecretsResponse, error) {
-	logger := log.With().Str("Activity", "ReencryptTenantIdentitySecretsOnSite").Logger()
-	logger.Info().Msg("Starting activity")
-
-	if request == nil {
-		err := errors.New("received empty ReencryptTenantIdentitySecrets request")
-		return nil, temporal.NewNonRetryableApplicationError(err.Error(), swe.ErrTypeInvalidRequest, err)
-	}
-
-	carbideClient := m.CoreGrpcAtomicClient.GetClient()
-	if carbideClient == nil {
-		return nil, client.ErrCoreGrpcClientNotConnected
-	}
-
-	response, err := carbideClient.GrpcServiceClient().ReencryptTenantIdentitySecrets(ctx, request)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to reencrypt tenant identity secrets via Core gRPC API")
-		return nil, swe.WrapErr(err)
-	}
-
-	logger.Info().Msg("Completed activity")
-	return response, nil
-}

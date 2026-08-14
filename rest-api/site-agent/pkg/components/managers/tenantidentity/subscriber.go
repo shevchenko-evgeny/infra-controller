@@ -48,9 +48,5 @@ func (mi *API) RegisterSubscriber() error {
 	w.RegisterActivity(manager.GetOpenIDConfigurationFromSite)
 	ManagerAccess.Data.EB.Log.Info().Msg("TenantIdentity: Successfully registered GetOpenIDConfiguration workflow & activity")
 
-	w.RegisterWorkflow(sww.ReencryptTenantIdentitySecrets)
-	w.RegisterActivity(manager.ReencryptTenantIdentitySecretsOnSite)
-	ManagerAccess.Data.EB.Log.Info().Msg("TenantIdentity: Successfully registered ReencryptTenantIdentitySecrets workflow & activity")
-
 	return nil
 }

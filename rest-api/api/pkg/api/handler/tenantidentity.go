@@ -1056,99 +1056,49 @@ func (rtish ReencryptTenantIdentitySecretsHandler) Handle(c echo.Context) error 
 	if handlerSpan != nil {
 		defer handlerSpan.End()
 	}
-	if dbUser == nil {
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve current user", nil)
-	}
 
 	siteID := c.Param("siteID")
 	if siteID == "" {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Missing siteID path parameter", nil)
 	}
 
-	if ok, err := auth.ValidateOrgMembership(dbUser, org); !ok {
-		if err != nil {
-			logger.Error().Err(err).Msg("error validating org membership for User in request")
-		} else {
-			logger.Warn().Msg("could not validate org membership for user, access denied")
-		}
-		return cutil.NewAPIErrorResponse(c, http.StatusForbidden, fmt.Sprintf("Failed to validate membership for org: %s", org), nil)
-	}
-	if ok := auth.ValidateUserRoles(dbUser, org, nil, auth.ProviderAdminRole); !ok {
-		logger.Warn().Msg("user does not have Provider Admin role, access denied")
-		return cutil.NewAPIErrorResponse(c, http.StatusForbidden, "User does not have Provider Admin role with org", nil)
-	}
-
-	if _, err := common.GetTenantForOrg(ctx, nil, rtish.dbSession, org); err != nil {
-		if err == common.ErrOrgTenantNotFound {
-			return cutil.NewAPIErrorResponse(c, http.StatusNotFound, "Org does not have a Tenant associated", nil)
-		}
-		logger.Error().Err(err).Msg("error retrieving Tenant for this org")
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Tenant", nil)
-	}
-
-	site, err := common.GetSiteFromIDString(ctx, nil, siteID, rtish.dbSession)
-	if err != nil {
-		if errors.Is(err, cdb.ErrDoesNotExist) || errors.Is(err, common.ErrInvalidID) {
-			logger.Warn().Err(err).Str("Site ID", siteID).Msg("site not found in request")
-			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Could not find Site with ID specified in request data", nil)
-		}
-		logger.Error().Err(err).Str("Site ID", siteID).Msg("error retrieving Site from DB")
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Site due to DB error", nil)
-	}
-
-	temporalClient, err := rtish.scp.GetClientByID(site.ID)
-	if err != nil {
-		logger.Error().Err(err).Msg("failed to retrieve Temporal client for Site")
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve client for Site", nil)
-	}
-
 	apiRequest := model.APIReencryptTenantIdentitySecretsRequest{}
-	if err := c.Bind(&apiRequest); err != nil {
+	err := c.Bind(&apiRequest)
+	if err != nil {
 		logger.Warn().Err(err).Msg("error binding request data into API model")
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Failed to parse request data, potentially invalid structure", nil)
 	}
-	if verr := apiRequest.Validate(); verr != nil {
-		logger.Warn().Err(verr).Msg("error validating Reencrypt Tenant Identity Secrets request data")
-		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Error validating Reencrypt Tenant Identity Secrets request data", verr)
+	validationErr := apiRequest.Validate()
+	if validationErr != nil {
+		logger.Warn().Err(validationErr).Msg("error validating Reencrypt Tenant Identity Secrets request data")
+		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Error validating Reencrypt Tenant Identity Secrets request data", validationErr)
 	}
 
-	protoRequest := apiRequest.ToProto()
-
-	hash, err := payloadHash(protoRequest)
-	if err != nil {
-		logger.Error().Err(err).Msg("failed to hash request payload for workflow ID")
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to hash request payload", nil)
+	temporalClient, resolvedSiteID, apiErr := common.AuthorizeProviderSiteForCore(common.AuthorizeProviderSiteForCoreInput{
+		Ctx:       ctx,
+		Logger:    logger,
+		DBSession: rtish.dbSession,
+		SCP:       rtish.scp,
+		Org:       org,
+		User:      dbUser,
+		SiteID:    siteID,
+	})
+	if apiErr != nil {
+		return cutil.NewAPIErrorResponse(c, apiErr.Code, apiErr.Message, apiErr.Data)
 	}
-	workflowOptions := tclient.StartWorkflowOptions{
-		ID:                       "tenant-identity-reencrypt-" + org + "-" + site.ID.String() + "-" + hash,
-		WorkflowExecutionTimeout: cutil.WorkflowExecutionTimeout,
-		TaskQueue:                queue.SiteTaskQueue,
-		WorkflowIDConflictPolicy: temporalEnums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, cutil.WorkflowContextTimeout)
-	defer cancel()
-
-	we, err := temporalClient.ExecuteWorkflow(ctx, workflowOptions, "ReencryptTenantIdentitySecrets", protoRequest)
-	if err != nil {
-		logger.Error().Err(err).Msg("failed to synchronously start Temporal workflow to reencrypt Tenant Identity secrets")
-		return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to start workflow to reencrypt Tenant Identity secrets", nil)
-	}
-
-	wid := we.GetID()
-	logger.Info().Str("Workflow ID", wid).Msg("executed synchronous reencrypt Tenant Identity secrets workflow")
 
 	var protoResponse corev1.ReencryptTenantIdentitySecretsResponse
-	err = we.Get(ctx, &protoResponse)
-	if err != nil {
-		var timeoutErr *tp.TimeoutError
-		if errors.As(err, &timeoutErr) || err == context.DeadlineExceeded || ctx.Err() != nil {
-			return common.TerminateWorkflowOnTimeOut(c, logger, temporalClient, wid, err, "TenantIdentity", "ReencryptTenantIdentitySecrets")
-		}
-
-		code, unwrapped := common.UnwrapWorkflowError(err)
-		logger.Error().Err(unwrapped).Msg("failed to synchronously execute Temporal workflow to reencrypt Tenant Identity secrets")
-		return cutil.NewAPIErrorResponse(c, code, "Failed to reencrypt Tenant Identity secrets", nil)
+	apiErr = common.ExecuteCoreGRPC(
+		ctx,
+		temporalClient,
+		corev1.Forge_ReencryptTenantIdentitySecrets_FullMethodName,
+		apiRequest.ToProto(),
+		&protoResponse,
+		resolvedSiteID,
+	)
+	if apiErr != nil {
+		logAPIError(logger, apiErr, "failed to reencrypt Tenant Identity secrets via Core proxy")
+		return cutil.NewAPIErrorResponse(c, apiErr.Code, apiErr.Message, nil)
 	}
 
 	apiResponse := &model.APIReencryptTenantIdentitySecretsResponse{}
