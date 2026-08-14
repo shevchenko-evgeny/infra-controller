@@ -1742,6 +1742,12 @@ func (f *NICoServerImpl) ReencryptTenantIdentitySecrets(ctx context.Context, req
 		CurrentEncryptionKeyId: current,
 	}
 	orgFilter := strings.TrimSpace(req.GetOrganizationId())
+	if orgFilter != "" {
+		state, ok := f.identityState[orgFilter]
+		if !ok || state == nil {
+			return nil, status.Errorf(codes.NotFound, "Identity configuration not found for org %q", orgFilter)
+		}
+	}
 	for orgID, st := range f.identityState {
 		if st == nil || (orgFilter != "" && orgID != orgFilter) {
 			continue

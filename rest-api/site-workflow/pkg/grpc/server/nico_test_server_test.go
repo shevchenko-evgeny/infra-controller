@@ -140,10 +140,11 @@ func TestReencryptTenantIdentitySecrets(t *testing.T) {
 		assert.Equal(t, uint32(3), resp.GetFieldsSkippedOnTarget())
 	})
 
-	t.Run("org filter excludes non-matching orgs", func(t *testing.T) {
+	t.Run("missing org filter returns not found", func(t *testing.T) {
 		resp, err := server.ReencryptTenantIdentitySecrets(context.Background(),
 			&corev1.ReencryptTenantIdentitySecretsRequest{OrganizationId: getStrPtr("other-org")})
-		require.NoError(t, err)
-		assert.Equal(t, uint32(0), resp.GetRowsExamined())
+		assert.Nil(t, resp)
+		require.Equal(t, codes.NotFound, status.Code(err))
+		assert.Equal(t, `Identity configuration not found for org "other-org"`, status.Convert(err).Message())
 	})
 }
