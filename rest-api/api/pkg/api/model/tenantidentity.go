@@ -292,12 +292,12 @@ type APITenantIdentityJWKS struct {
 // Both fields are optional: omitting organizationId targets all orgs; dryRun validates
 // without writing.
 type APIReencryptTenantIdentitySecretsRequest struct {
-	OrganizationID *string `json:"organizationId,omitempty"`
+	OrganizationID *string `json:"organizationId"`
 	DryRun         bool    `json:"dryRun"`
 }
 
-// Validate enforces the REST-layer contract. Both fields are optional, so there is nothing
-// to reject; the method exists to match the sibling requests' interface.
+// Validate enforces the REST-layer contract. Both fields are optional and have no
+// context-free constraints; the handler verifies a supplied organizationId against the URL org.
 func (req APIReencryptTenantIdentitySecretsRequest) Validate() error {
 	return nil
 }

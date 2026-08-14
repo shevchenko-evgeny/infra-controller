@@ -288,6 +288,59 @@ func TestAPITenantIdentityConfig_FromResponseProto(t *testing.T) {
 	})
 }
 
+// TestAPIReencryptTenantIdentitySecretsRequest_Validate verifies both the omitted all-organizations scope and a supplied organization remain syntactically valid for handler-level scope validation.
+func TestAPIReencryptTenantIdentitySecretsRequest_Validate(t *testing.T) {
+	tests := []struct {
+		name string
+		req  APIReencryptTenantIdentitySecretsRequest
+	}{
+		{name: "organization omitted"},
+		{name: "organization supplied", req: APIReencryptTenantIdentitySecretsRequest{
+			OrganizationID: cutil.GetPtr("acme-corp"),
+			DryRun:         true,
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NoError(t, tt.req.Validate())
+		})
+	}
+}
+
+// TestAPIReencryptTenantIdentitySecretsRequest_ToProto verifies optional organization scope and dry-run behavior map directly to the Core request.
+func TestAPIReencryptTenantIdentitySecretsRequest_ToProto(t *testing.T) {
+	tests := []struct {
+		name           string
+		req            APIReencryptTenantIdentitySecretsRequest
+		wantOrg        string
+		wantOrgPresent bool
+		wantDryRun     bool
+	}{
+		{name: "organization omitted"},
+		{
+			name: "organization and dry-run supplied",
+			req: APIReencryptTenantIdentitySecretsRequest{
+				OrganizationID: cutil.GetPtr("acme-corp"),
+				DryRun:         true,
+			},
+			wantOrg:        "acme-corp",
+			wantOrgPresent: true,
+			wantDryRun:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protoRequest := tt.req.ToProto()
+			require.NotNil(t, protoRequest)
+			assert.Equal(t, tt.wantOrg, protoRequest.GetOrganizationId())
+			assert.Equal(t, tt.wantOrgPresent, protoRequest.OrganizationId != nil)
+			assert.Equal(t, tt.wantDryRun, protoRequest.GetDryRun())
+		})
+	}
+}
+
 // TestAPITenantIdentityTokenDelegationCreateOrUpdateRequest_Validate verifies required fields and clientSecretBasic sub-field validation on the token delegation create-or-update request.
 func TestAPITenantIdentityTokenDelegationCreateOrUpdateRequest_Validate(t *testing.T) {
 	tests := []struct {

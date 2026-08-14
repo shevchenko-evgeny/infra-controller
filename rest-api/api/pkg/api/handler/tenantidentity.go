@@ -1073,6 +1073,10 @@ func (rtish ReencryptTenantIdentitySecretsHandler) Handle(c echo.Context) error 
 		logger.Warn().Err(validationErr).Msg("error validating Reencrypt Tenant Identity Secrets request data")
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Error validating Reencrypt Tenant Identity Secrets request data", validationErr)
 	}
+	if apiRequest.OrganizationID != nil && *apiRequest.OrganizationID != org {
+		logger.Warn().Str("organizationID", *apiRequest.OrganizationID).Msg("organizationId in request does not match request org")
+		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "organizationId specified in request does not match request org", nil)
+	}
 
 	temporalClient, resolvedSiteID, apiErr := common.AuthorizeProviderSiteForCore(common.AuthorizeProviderSiteForCoreInput{
 		Ctx:       ctx,
