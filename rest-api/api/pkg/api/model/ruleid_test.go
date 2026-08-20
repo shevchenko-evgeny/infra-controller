@@ -9,10 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestRequestRuleIDValidation exercises the ruleId field across all the
-// rack/tray operation request models that grew it. The eight types are
-// validated through three different code paths (ozzo-validation struct chain,
-// inline check, mixed) but converge on the same "nil or valid UUID" contract.
+// TestRequestRuleIDValidation exercises the ruleId field across the rack,
+// tray, and domain operation request models. Their validation paths converge
+// on the same "nil or valid UUID" contract.
 func TestRequestRuleIDValidation(t *testing.T) {
 	validUUID := "550e8400-e29b-41d4-a716-446655440000"
 	badUUID := "not-a-uuid"
@@ -66,6 +65,30 @@ func TestRequestRuleIDValidation(t *testing.T) {
 				return (&APIBatchUpdateTrayPowerStateRequest{SiteID: "s", State: "on", RuleID: &validUUID}).Validate()
 			},
 		},
+		{
+			name: "APIBatchUpdateNVLinkDomainPowerStateRequest - bad ruleId",
+			validate: func() error {
+				return (&APIBatchUpdateNVLinkDomainPowerStateRequest{
+					SiteID:          "s",
+					NVLinkDomainIDs: []string{validUUID},
+					State:           "on",
+					RuleID:          &badUUID,
+				}).Validate()
+			},
+			wantErr:     true,
+			errContains: "UUID",
+		},
+		{
+			name: "APIBatchUpdateNVLinkDomainPowerStateRequest - valid ruleId",
+			validate: func() error {
+				return (&APIBatchUpdateNVLinkDomainPowerStateRequest{
+					SiteID:          "s",
+					NVLinkDomainIDs: []string{validUUID},
+					State:           "on",
+					RuleID:          &validUUID,
+				}).Validate()
+			},
+		},
 		// ---- firmware.go ----
 		{
 			name: "APIUpdateFirmwareRequest - bad ruleId",
@@ -107,6 +130,42 @@ func TestRequestRuleIDValidation(t *testing.T) {
 			name: "APIBatchTrayFirmwareUpdateRequest - valid ruleId",
 			validate: func() error {
 				return (&APIBatchTrayFirmwareUpdateRequest{SiteID: "s", RuleID: &validUUID}).Validate()
+			},
+		},
+		{
+			name: "APINVLinkDomainFirmwareUpdateRequest - bad ruleId",
+			validate: func() error {
+				return (&APINVLinkDomainFirmwareUpdateRequest{SiteID: "s", RuleID: &badUUID}).Validate()
+			},
+			wantErr:     true,
+			errContains: "UUID",
+		},
+		{
+			name: "APINVLinkDomainFirmwareUpdateRequest - valid ruleId",
+			validate: func() error {
+				return (&APINVLinkDomainFirmwareUpdateRequest{SiteID: "s", RuleID: &validUUID}).Validate()
+			},
+		},
+		{
+			name: "APIBatchNVLinkDomainFirmwareUpdateRequest - bad ruleId",
+			validate: func() error {
+				return (&APIBatchNVLinkDomainFirmwareUpdateRequest{
+					SiteID:          "s",
+					NVLinkDomainIDs: []string{validUUID},
+					RuleID:          &badUUID,
+				}).Validate()
+			},
+			wantErr:     true,
+			errContains: "UUID",
+		},
+		{
+			name: "APIBatchNVLinkDomainFirmwareUpdateRequest - valid ruleId",
+			validate: func() error {
+				return (&APIBatchNVLinkDomainFirmwareUpdateRequest{
+					SiteID:          "s",
+					NVLinkDomainIDs: []string{validUUID},
+					RuleID:          &validUUID,
+				}).Validate()
 			},
 		},
 		// ---- rack.go (bring-up) ----
