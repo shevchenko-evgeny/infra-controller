@@ -327,6 +327,7 @@ async fn fetch_machine(
     let request = tonic::Request::new(rpc::forge::MachinesByIdsRequest {
         machine_ids: vec![machine_id],
         include_history: true,
+        include_spx_info: false,
     });
 
     let machine = match api
@@ -424,6 +425,7 @@ pub(super) async fn fetch_machines(
             .find_machines_by_ids(tonic::Request::new(forgerpc::MachinesByIdsRequest {
                 machine_ids: next_ids.to_vec(),
                 include_history,
+                include_spx_info: false,
             }))
             .await?
             .into_inner();

@@ -151,6 +151,7 @@ impl TestHarness {
             .find_machines_by_ids(Request::new(rpc::forge::MachinesByIdsRequest {
                 machine_ids: vec![id],
                 include_history: true,
+                include_spx_info: false,
             }))
             .await
             .expect("machine lookup by id should succeed")

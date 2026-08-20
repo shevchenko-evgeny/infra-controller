@@ -226,6 +226,7 @@ async fn fetch_network_status(
         .find_machines_by_ids(tonic::Request::new(forgerpc::MachinesByIdsRequest {
             machine_ids: ids_for_page,
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .map(|response| response.into_inner())?

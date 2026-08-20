@@ -3834,6 +3834,10 @@ message InstanceReleaseResult {
 message MachinesByIdsRequest {
   repeated common.MachineId machine_ids = 1;
   bool include_history = 2;
+  // Include SPX attachment selectors derived from each host's current DPA interfaces.
+  // Defaults to false. When false, SPX inventory is not loaded and
+  // MachineStatus.spx_info is absent.
+  bool include_spx_info = 3;
 }
 
 message MachineSearchConfig {
@@ -4061,6 +4065,11 @@ message MachineStatus {
   optional string last_scout_observed_version = 22;
   optional InstanceNetworkRestrictions instance_network_restrictions = 23;
   LifecycleStatus lifecycle = 24;
+  // SPX attachment selectors derived from the machine's current DPA interfaces.
+  // Present for host machines returned by FindMachinesByIds only when requested.
+  // The message is present with an empty selector list when a requested host has no
+  // interfaces that can be selected. It is always absent for DPU machines.
+  optional MachineSpxInfo spx_info = 25;
 }
 
 message Machine {
@@ -10453,4 +10462,19 @@ message InterfaceAddressConfig {
   string prefix = 5;
   // DPU-hosted SVI address used as the host gateway when configured.
   optional string svi_ip = 6;
+}
+
+// A selector that can be supplied unchanged in InstanceSpxAttachment.
+message SpxDeviceSelector {
+  option (carbide.codegen.v1.message_derive) = "serde::Serialize";
+  string device = 1;
+  uint32 device_instance = 2;
+}
+
+message MachineSpxInfo {
+  option (carbide.codegen.v1.message_derive) = "serde::Serialize";
+  // Selectors use the same device grouping and PCI-slot instance assignment as SPX
+  // allocation. Interfaces without a non-empty device description are omitted.
+  // Selectors are ordered lexicographically by device and then by device_instance.
+  repeated SpxDeviceSelector device_selectors = 1;
 }

@@ -464,6 +464,7 @@ async fn fetch_dpu_health_contributors(
     let request = tonic::Request::new(MachinesByIdsRequest {
         machine_ids: dpu_machine_ids,
         include_history: false,
+        include_spx_info: false,
     });
     let dpus = match api
         .find_machines_by_ids(request)
@@ -563,6 +564,7 @@ async fn fetch_machine_health_snapshot(
         .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![*machine_id],
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .map(|response| response.into_inner())

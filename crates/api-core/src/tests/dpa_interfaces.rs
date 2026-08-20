@@ -16,7 +16,9 @@
  */
 
 use rpc::forge::forge_server::Forge;
-use rpc::forge::{DpaInterfaceCreationRequest, DpaInterfaceType, DpaInterfacesByIdsRequest};
+use rpc::forge::{
+    DpaInterfaceCreationRequest, DpaInterfaceType, DpaInterfacesByIdsRequest, MachinesByIdsRequest,
+};
 use rpc::forge_agent_control_response::{self as fac, Action};
 
 use crate::handlers::process_scout_req_for_test;
@@ -82,6 +84,147 @@ async fn dpa_api_test_cases(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error
 
     assert!(find_resp.id.unwrap() == intf_id);
     assert!(find_resp.mac_addr == cr_resp.mac_addr);
+
+    Ok(())
+}
+
+#[crate::sqlx_test]
+async fn find_machines_includes_spx_selectors_matching_allocation_order(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = create_test_env(pool).await;
+    let machine_with_devices = create_managed_host(&env).await;
+    let machine_without_devices = create_managed_host(&env).await;
+    let dpu_machine_id = machine_with_devices.dpu().id;
+
+    let cases = [
+        (
+            "00:11:22:33:44:55",
+            "0000:cc:00.1",
+            Some("ConnectX-7"),
+            DpaInterfaceType::Astra,
+        ),
+        (
+            "00:11:22:33:44:56",
+            "0000:cc:00.0",
+            Some("ConnectX-7"),
+            DpaInterfaceType::Svpc,
+        ),
+        (
+            "00:11:22:33:44:57",
+            "0000:dd:00.0",
+            Some("BlueField-3"),
+            DpaInterfaceType::Astra,
+        ),
+        (
+            "00:11:22:33:44:58",
+            "0000:ee:00.0",
+            None,
+            DpaInterfaceType::Astra,
+        ),
+        (
+            "00:11:22:33:44:59",
+            "0000:ff:00.0",
+            Some("ConnectX-8"),
+            DpaInterfaceType::Astra,
+        ),
+    ];
+    for (mac_addr, pci_name, device_description, interface_type) in cases {
+        env.api
+            .create_dpa_interface(tonic::Request::new(DpaInterfaceCreationRequest {
+                mac_addr: mac_addr.to_string(),
+                machine_id: Some(machine_with_devices.id),
+                device_type: "test-device".to_string(),
+                pci_name: pci_name.to_string(),
+                device_description: device_description.map(str::to_string),
+                interface_type: interface_type.into(),
+            }))
+            .await?;
+    }
+
+    let response_without_spx_info = env
+        .api
+        .find_machines_by_ids(tonic::Request::new(MachinesByIdsRequest {
+            machine_ids: vec![
+                machine_without_devices.id,
+                machine_with_devices.id,
+                dpu_machine_id,
+            ],
+            include_history: false,
+            include_spx_info: false,
+        }))
+        .await?
+        .into_inner();
+    assert!(response_without_spx_info.machines.iter().all(|machine| {
+        machine
+            .status
+            .as_ref()
+            .is_some_and(|status| status.spx_info.is_none())
+    }));
+
+    let response = env
+        .api
+        .find_machines_by_ids(tonic::Request::new(MachinesByIdsRequest {
+            machine_ids: vec![
+                machine_without_devices.id,
+                machine_with_devices.id,
+                dpu_machine_id,
+            ],
+            include_history: false,
+            include_spx_info: true,
+        }))
+        .await?
+        .into_inner();
+
+    assert_eq!(response.machines.len(), 3);
+    let dpu_machine = response
+        .machines
+        .iter()
+        .find(|machine| machine.id == Some(dpu_machine_id))
+        .expect("DPU machine");
+    assert!(
+        dpu_machine
+            .status
+            .as_ref()
+            .is_some_and(|status| status.spx_info.is_none())
+    );
+
+    let machine_without_devices = response
+        .machines
+        .iter()
+        .find(|machine| machine.id == Some(machine_without_devices.id))
+        .expect("machine without devices");
+    let selectors_without_devices = &machine_without_devices
+        .status
+        .as_ref()
+        .and_then(|status| status.spx_info.as_ref())
+        .expect("host machine SPX info")
+        .device_selectors;
+    assert!(selectors_without_devices.is_empty());
+
+    let machine_with_devices = response
+        .machines
+        .iter()
+        .find(|machine| machine.id == Some(machine_with_devices.id))
+        .expect("machine with devices");
+    let selectors = &machine_with_devices
+        .status
+        .as_ref()
+        .and_then(|status| status.spx_info.as_ref())
+        .expect("host machine SPX info")
+        .device_selectors;
+    assert_eq!(
+        selectors
+            .iter()
+            .map(|selector| (selector.device.as_str(), selector.device_instance))
+            .collect::<Vec<_>>(),
+        vec![
+            ("BlueField-3", 0),
+            ("ConnectX-7", 0),
+            ("ConnectX-7", 1),
+            ("ConnectX-8", 0),
+        ]
+    );
 
     Ok(())
 }

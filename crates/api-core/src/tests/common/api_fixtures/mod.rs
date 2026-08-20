@@ -740,6 +740,7 @@ impl TestEnv {
             .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
                 machine_ids: vec![id],
                 include_history: true,
+                include_spx_info: false,
             }))
             .await
             .unwrap()

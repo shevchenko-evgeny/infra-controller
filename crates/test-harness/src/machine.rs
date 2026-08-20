@@ -40,6 +40,7 @@ pub trait TestMachine {
                     crate::rpc::forge::MachinesByIdsRequest {
                         machine_ids: vec![self.id()],
                         include_history: true,
+                        include_spx_info: false,
                     }
                     .into_request(),
                 )

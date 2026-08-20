@@ -88,6 +88,7 @@ async fn find_machine(
         .find_machines_by_ids(Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![machine_id],
             include_history: true,
+            include_spx_info: false,
         }))
         .await?
         .into_inner()

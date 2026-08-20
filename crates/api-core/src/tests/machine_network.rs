@@ -1500,6 +1500,7 @@ async fn test_managed_host_network_status(pool: sqlx::PgPool) {
         .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![mh.dpu().id],
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .unwrap()
@@ -1766,6 +1767,7 @@ async fn test_retain_in_alert_since(pool: sqlx::PgPool) {
         .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![dpu_machine_id],
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .unwrap()
@@ -1795,6 +1797,7 @@ async fn test_retain_in_alert_since(pool: sqlx::PgPool) {
         .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![dpu_machine_id],
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .unwrap()

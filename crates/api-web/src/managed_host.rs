@@ -754,6 +754,7 @@ async fn fetch_managed_hosts_with_metadata(
         let request = tonic::Request::new(forgerpc::MachinesByIdsRequest {
             machine_ids: next_ids.to_vec(),
             include_history,
+            include_spx_info: false,
         });
         let next_machines = api.find_machines_by_ids(request).await?.into_inner();
 

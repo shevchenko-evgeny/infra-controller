@@ -1130,6 +1130,7 @@ async fn test_discovery_records_scout_version(
         .find_machines_by_ids(Request::new(rpc::forge::MachinesByIdsRequest {
             machine_ids: vec![machine_id],
             include_history: false,
+            include_spx_info: false,
         }))
         .await
         .unwrap()

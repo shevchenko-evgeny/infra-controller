@@ -26,6 +26,7 @@ use carbide_secrets::credentials::{BmcCredentialType, CredentialKey, Credentials
 use carbide_uuid::machine::MachineId;
 use libredfish::SystemPowerControl;
 use model::bmc_suppression::BmcSuppressionSubsystem;
+use model::dpa_interface::{DpaInterface, DpaSearchConfig};
 use model::hardware_info::MachineNvLinkInfo;
 use model::machine::machine_search_config::MachineSearchConfig;
 use model::machine::{LoadSnapshotOptions, Machine, ManagedHostState, ManagedHostStateSnapshot};
@@ -37,6 +38,7 @@ use crate::CarbideError;
 use crate::api::{Api, log_machine_id, log_request_data};
 use crate::auth::AuthContext;
 use crate::handlers::utils::convert_and_log_machine_id;
+use crate::instance::sort_spx_by_slot;
 
 /// Resolve the host UEFI credential to authenticate a *clear* with while
 /// force-deleting a machine, keyed by the password the device currently holds
@@ -129,7 +131,7 @@ pub(crate) async fn find_machines_by_ids(
         );
     }
 
-    let snapshots = db::managed_host::load_by_machine_ids(
+    let mut snapshots = db::managed_host::load_by_machine_ids(
         &mut txn,
         &machine_ids,
         LoadSnapshotOptions {
@@ -139,6 +141,32 @@ pub(crate) async fn find_machines_by_ids(
         },
     )
     .await?;
+
+    if request.include_spx_info {
+        // SPX selectors are live machine inventory. Load all requested hosts' DPA
+        // interfaces in one query and attach them to the corresponding snapshots
+        // before converting the machines to their RPC representation.
+        let host_machine_ids = snapshots
+            .keys()
+            .filter(|machine_id| !machine_id.machine_type().is_dpu())
+            .copied()
+            .collect::<Vec<_>>();
+        if !host_machine_ids.is_empty() {
+            let mut dpa_interfaces_by_machine = db::dpa_interface::find_by_machine_ids(
+                &mut txn,
+                &host_machine_ids,
+                DpaSearchConfig::default(),
+            )
+            .await?;
+            for machine_id in host_machine_ids {
+                if let Some(snapshot) = snapshots.get_mut(&machine_id) {
+                    snapshot.dpa_interface_snapshots = dpa_interfaces_by_machine
+                        .remove(&machine_id)
+                        .unwrap_or_default();
+                }
+            }
+        }
+    }
 
     txn.commit().await?;
 
@@ -150,6 +178,7 @@ pub(crate) async fn find_machines_by_ids(
     Ok(Response::new(snapshot_map_to_rpc_machines(
         snapshots,
         &sla_config,
+        request.include_spx_info,
     )))
 }
 
@@ -956,19 +985,22 @@ pub(crate) async fn get_dpu_info_list(
 fn snapshot_map_to_rpc_machines(
     snapshots: HashMap<MachineId, ManagedHostStateSnapshot>,
     sla_config: &model::machine::slas::MachineSlaConfig,
+    include_spx_info: bool,
 ) -> rpc::MachineList {
     let mut result = rpc::MachineList {
         machines: Vec::with_capacity(snapshots.len()),
     };
 
-    for (machine_id, snapshot) in snapshots.into_iter() {
-        if let Some(rpc_machine) = snapshot.into_rpc_machine_state(
-            match machine_id.machine_type().is_dpu() {
-                true => Some(&machine_id),
-                false => None,
-            },
-            sla_config,
-        ) {
+    for (machine_id, snapshot) in snapshots {
+        let is_dpu = machine_id.machine_type().is_dpu();
+        let spx_info =
+            (include_spx_info && !is_dpu).then(|| spx_info(&snapshot.dpa_interface_snapshots));
+        if let Some(mut rpc_machine) =
+            snapshot.into_rpc_machine_state(is_dpu.then_some(&machine_id), sla_config)
+        {
+            if let Some(status) = rpc_machine.status.as_mut() {
+                status.spx_info = spx_info;
+            }
             result.machines.push(rpc_machine);
         }
         // A log message for the None case is already emitted inside
@@ -976,6 +1008,27 @@ fn snapshot_map_to_rpc_machines(
     }
 
     result
+}
+
+fn spx_info(interfaces: &[DpaInterface]) -> rpc::MachineSpxInfo {
+    let mut device_selectors = sort_spx_by_slot(interfaces)
+        .into_iter()
+        .flat_map(|(device, interfaces)| {
+            (0u32..)
+                .zip(interfaces)
+                .map(move |(device_instance, _)| rpc::SpxDeviceSelector {
+                    device: device.clone(),
+                    device_instance,
+                })
+        })
+        .collect::<Vec<_>>();
+    device_selectors.sort_unstable_by(|a, b| {
+        a.device
+            .cmp(&b.device)
+            .then(a.device_instance.cmp(&b.device_instance))
+    });
+
+    rpc::MachineSpxInfo { device_selectors }
 }
 
 async fn clear_bmc_credentials(api: &Api, machine: &Machine) -> Result<(), CarbideError> {

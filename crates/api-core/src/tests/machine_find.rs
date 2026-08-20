@@ -622,6 +622,7 @@ async fn test_machine_capabilities_response(
         .api
         .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
             include_history: false,
+            include_spx_info: false,
             machine_ids: vec![mh.host_snapshot.id],
         }))
         .await

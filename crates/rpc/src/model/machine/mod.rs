@@ -390,6 +390,7 @@ impl From<Machine> for rpc::forge::Machine {
                 state_reason: rpc_state_reason.clone(),
                 sla: None, // calculated at RPC handler, see ManagedHostStateSnapshot::rpc_machine_state
             }),
+            spx_info: None, // populated by FindMachinesByIds from live DPA interfaces
         };
 
         rpc::Machine {

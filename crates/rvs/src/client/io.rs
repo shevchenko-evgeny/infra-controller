@@ -45,6 +45,7 @@ impl NicoClient {
             .find_machines_by_ids(MachinesByIdsRequest {
                 machine_ids: vec![*tray_id],
                 include_history: false,
+                include_spx_info: false,
             })
             .await?;
 
@@ -154,6 +155,7 @@ impl NicoClient {
                 .find_machines_by_ids(MachinesByIdsRequest {
                     machine_ids: chunk.to_vec(),
                     include_history: false,
+                    include_spx_info: false,
                 })
                 .await?;
 

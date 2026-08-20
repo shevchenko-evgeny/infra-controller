@@ -166,6 +166,7 @@ impl ApiClient {
         let request = MachinesByIdsRequest {
             machine_ids,
             include_history: false,
+            include_spx_info: false,
         };
         let out = self
             .0

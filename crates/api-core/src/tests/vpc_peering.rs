@@ -178,6 +178,7 @@ async fn release_instances_from_vpcs(
             rpc::forge::MachinesByIdsRequest {
                 machine_ids: instances.iter().filter_map(|i| i.machine_id).collect(),
                 include_history: false,
+                include_spx_info: false,
             }
             .into_request(),
         )

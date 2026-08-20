@@ -98,6 +98,7 @@ async fn test_machine_state_history(pool: sqlx::PgPool) -> Result<(), Box<dyn st
             .find_machines_by_ids(tonic::Request::new(rpc::forge::MachinesByIdsRequest {
                 machine_ids: vec![*machine_id],
                 include_history: true,
+                include_spx_info: false,
             }))
             .await?
             .into_inner()

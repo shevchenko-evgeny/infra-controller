@@ -221,6 +221,7 @@ impl ApiClient {
             .find_machines_by_ids(::rpc::forge::MachinesByIdsRequest {
                 machine_ids: vec![id],
                 include_history: true,
+                include_spx_info: false,
             })
             .await?;
 

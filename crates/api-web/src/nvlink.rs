@@ -462,6 +462,7 @@ async fn fetch_logical_partitions(
                     .find_machines_by_ids(tonic::Request::new(forgerpc::MachinesByIdsRequest {
                         machine_ids: next_ids.to_vec(),
                         include_history: false,
+                        include_spx_info: false,
                     }))
                     .await?
                     .into_inner();
