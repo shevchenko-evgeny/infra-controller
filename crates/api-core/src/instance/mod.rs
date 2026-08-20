@@ -39,9 +39,13 @@ use ipnetwork::IpNetwork;
 use itertools::Itertools;
 use model::ConfigValidationError;
 use model::dpa_interface::{DpaInterface, DpaSearchConfig};
+use model::extension_service::{
+    ExtensionService, ExtensionServiceLifecycleState, ExtensionServiceType,
+};
 use model::hardware_info::InfinibandInterface;
 use model::instance::NewInstance;
 use model::instance::config::InstanceConfig;
+use model::instance::config::extension_services::InstanceExtensionServicesConfig;
 use model::instance::config::infiniband::InstanceInfinibandConfig;
 use model::instance::config::network::{
     InstanceInterfaceIpFamilyMode, InstanceNetworkConfig, InterfaceFunctionId, Ipv6InterfaceConfig,
@@ -1414,6 +1418,156 @@ pub(crate) async fn allocate_instance(
         .ok_or_else(|| CarbideError::internal("instance allocation returned no result".to_string()))
 }
 
+/// Validates one requested instance extension-service configuration.
+///
+/// DPF Helm chart services have exactly one attachable revision: V1. Like
+/// Kubernetes Pod services, callers provide that concrete active version.
+pub(crate) fn validate_instance_extension_services(
+    extension_services: &InstanceExtensionServicesConfig,
+    services: &HashMap<carbide_uuid::extension_service::ExtensionServiceId, ExtensionService>,
+    versions: &HashMap<carbide_uuid::extension_service::ExtensionServiceId, Vec<ConfigVersion>>,
+    dpf_enabled: bool,
+    existing_active_service_ids: &HashSet<carbide_uuid::extension_service::ExtensionServiceId>,
+) -> Result<(), CarbideError> {
+    let service_ids: Vec<_> = extension_services
+        .service_configs
+        .iter()
+        .map(|service| service.service_id)
+        .collect();
+    let unique_service_ids: HashSet<_> = service_ids.iter().collect();
+    if service_ids.len() != unique_service_ids.len() {
+        return Err(CarbideError::InvalidArgument(
+            "duplicate extension services in configuration. only one version of each service is allowed"
+                .to_string(),
+        ));
+    }
+
+    let mut has_dpf_helm_chart = false;
+    let mut has_kubernetes_pod = false;
+
+    for config in &extension_services.service_configs {
+        let Some(service) = services.get(&config.service_id) else {
+            return Err(CarbideError::FailedPrecondition(format!(
+                "extension service {} does not exist",
+                config.service_id,
+            )));
+        };
+        if service.deleted.is_some() {
+            return Err(CarbideError::FailedPrecondition(format!(
+                "extension service {} does not exist",
+                config.service_id,
+            )));
+        }
+
+        match service.service_type {
+            ExtensionServiceType::KubernetesPod => {
+                has_kubernetes_pod = true;
+                if config.version.version_nr() == 0 {
+                    return Err(CarbideError::FailedPrecondition(format!(
+                        "extension service {} version must not be empty for Kubernetes Pod services",
+                        config.service_id,
+                    )));
+                }
+                if !versions
+                    .get(&config.service_id)
+                    .is_some_and(|service_versions| service_versions.contains(&config.version))
+                {
+                    return Err(CarbideError::FailedPrecondition(format!(
+                        "extension service {} version {} does not exist or is deleted",
+                        config.service_id, config.version,
+                    )));
+                }
+            }
+            ExtensionServiceType::DpfHelmChart => {
+                has_dpf_helm_chart = true;
+                if !dpf_enabled {
+                    return Err(CarbideError::FailedPrecondition(
+                        "DPF Helm chart extension services require DPF to be enabled for this site"
+                            .to_string(),
+                    ));
+                }
+                if config.version.version_nr() != 1 {
+                    return Err(CarbideError::InvalidArgument(format!(
+                        "DPF Helm chart extension service {} must use V1",
+                        config.service_id,
+                    )));
+                }
+
+                if !existing_active_service_ids.contains(&config.service_id)
+                    && service.status.controller_state.value
+                        != ExtensionServiceLifecycleState::Active
+                {
+                    return Err(CarbideError::FailedPrecondition(format!(
+                        "DPF Helm chart extension service {} can only be attached while Active; current state is {:?}",
+                        config.service_id, service.status.controller_state.value,
+                    )));
+                }
+
+                if !versions
+                    .get(&config.service_id)
+                    .is_some_and(|service_versions| service_versions.contains(&config.version))
+                {
+                    return Err(CarbideError::FailedPrecondition(format!(
+                        "DPF Helm chart extension service {} version {} does not exist or is deleted",
+                        config.service_id, config.version,
+                    )));
+                }
+            }
+        }
+    }
+
+    if has_dpf_helm_chart && has_kubernetes_pod {
+        return Err(CarbideError::FailedPrecondition(
+            "DPF Helm chart and Kubernetes Pod extension services cannot be attached to the same instance"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Ensures a service type is attached only to the host model that can
+/// reconcile it.  DPF Helm services use DPUDevice labels and never reach the
+/// DPU agent; Kubernetes Pod services retain their existing agent-only path.
+pub(crate) fn validate_instance_extension_service_host_compatibility(
+    machine_id: MachineId,
+    is_dpf_managed_host: bool,
+    extension_services: &InstanceExtensionServicesConfig,
+    services: &HashMap<carbide_uuid::extension_service::ExtensionServiceId, ExtensionService>,
+) -> Result<(), CarbideError> {
+    let mut has_dpf_helm_chart = false;
+    let mut has_kubernetes_pod = false;
+    for config in &extension_services.service_configs {
+        let service = services
+            .get(&config.service_id)
+            .expect("extension service config was validated before host compatibility");
+        match (is_dpf_managed_host, &service.service_type) {
+            (true, ExtensionServiceType::KubernetesPod) => {
+                return Err(CarbideError::FailedPrecondition(format!(
+                    "DPU extension services are not supported on DPF-managed host {machine_id}"
+                )));
+            }
+            (false, ExtensionServiceType::DpfHelmChart) => {
+                return Err(CarbideError::FailedPrecondition(format!(
+                    "DPF Helm chart extension services require a DPF-managed host {machine_id}"
+                )));
+            }
+            _ => {}
+        }
+        match service.service_type {
+            ExtensionServiceType::KubernetesPod => has_kubernetes_pod = true,
+            ExtensionServiceType::DpfHelmChart => has_dpf_helm_chart = true,
+        }
+    }
+    if has_dpf_helm_chart && has_kubernetes_pod {
+        return Err(CarbideError::FailedPrecondition(
+            "DPF Helm chart and Kubernetes Pod extension services cannot be attached to the same instance"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn not_allocatable_error(machine_id: MachineId, reason: NotAllocatableReason) -> CarbideError {
     match reason {
         NotAllocatableReason::InvalidState(state) => CarbideError::InvalidArgument(format!(
@@ -1643,14 +1797,6 @@ pub(crate) async fn batch_allocate_instances(
             }
             return Err(not_allocatable_error(machine_id, e));
         }
-
-        if mh_snapshot.host_snapshot.config.dpf.used_for_ingestion
-            && !request.config.extension_services.service_configs.is_empty()
-        {
-            return Err(CarbideError::FailedPrecondition(format!(
-                "DPU extension services are not supported on DPF-managed host {machine_id}"
-            )));
-        }
     }
 
     // ==== Phase 5: Validate shared resources ====
@@ -1685,13 +1831,15 @@ pub(crate) async fn batch_allocate_instances(
         }
     }
 
-    // Collect all unique extension service configs for validation
-    let all_service_configs: Vec<_> = requests
+    // Collect every requested service ID before resolving them while their
+    // service and version rows are locked.
+    let all_service_ids: Vec<_> = requests
         .iter()
-        .flat_map(|r| r.config.extension_services.service_configs.iter())
+        .flat_map(|request| request.config.extension_services.service_configs.iter())
+        .map(|service| service.service_id)
         .collect();
 
-    if !all_service_configs.is_empty() {
+    if !all_service_ids.is_empty() {
         // Validate no duplicate service IDs within each request
         for request in &requests {
             let service_ids: Vec<_> = request
@@ -1711,36 +1859,39 @@ pub(crate) async fn batch_allocate_instances(
         }
 
         // Collect all unique service IDs across all requests
-        let unique_service_ids: Vec<_> = all_service_configs
-            .iter()
-            .map(|s| s.service_id)
+        let unique_service_ids: Vec<_> = all_service_ids
+            .into_iter()
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
 
-        // Batch query all extension services
-        let services =
+        let services = extension_service::find_by_ids(&mut txn, &unique_service_ids, true)
+            .await?
+            .into_iter()
+            .map(|service| (service.id, service))
+            .collect();
+        let versions =
             extension_service::find_versions_by_service_ids(&mut txn, &unique_service_ids, true)
                 .await?;
 
-        // Validate each service config
-        for service in all_service_configs {
-            if !services.contains_key(&service.service_id) {
-                return Err(CarbideError::FailedPrecondition(format!(
-                    "extension service {} does not exist",
-                    service.service_id,
-                )));
-            }
-            if !services
-                .get(&service.service_id)
-                .unwrap()
-                .contains(&service.version)
-            {
-                return Err(CarbideError::FailedPrecondition(format!(
-                    "extension service {} version {} does not exist or is deleted",
-                    service.service_id, service.version,
-                )));
-            }
+        for request in &mut requests {
+            validate_instance_extension_services(
+                &request.config.extension_services,
+                &services,
+                &versions,
+                api.runtime_config.dpf.enabled,
+                &HashSet::new(),
+            )?;
+
+            let mh_snapshot = snapshot_map
+                .get(&request.machine_id)
+                .expect("requested managed-host snapshot was validated above");
+            validate_instance_extension_service_host_compatibility(
+                request.machine_id,
+                mh_snapshot.host_snapshot.config.dpf.used_for_ingestion,
+                &request.config.extension_services,
+                &services,
+            )?;
         }
     }
 

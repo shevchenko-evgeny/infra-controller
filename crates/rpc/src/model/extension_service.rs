@@ -37,6 +37,7 @@ impl From<ExtensionServiceType> for rpc::DpuExtensionServiceType {
     fn from(service_type: ExtensionServiceType) -> Self {
         match service_type {
             ExtensionServiceType::KubernetesPod => rpc::DpuExtensionServiceType::KubernetesPod,
+            ExtensionServiceType::DpfHelmChart => rpc::DpuExtensionServiceType::DpfHelmChart,
         }
     }
 }
@@ -45,6 +46,7 @@ impl From<rpc::DpuExtensionServiceType> for ExtensionServiceType {
     fn from(service_type: rpc::DpuExtensionServiceType) -> Self {
         match service_type {
             rpc::DpuExtensionServiceType::KubernetesPod => ExtensionServiceType::KubernetesPod,
+            rpc::DpuExtensionServiceType::DpfHelmChart => ExtensionServiceType::DpfHelmChart,
         }
     }
 }
@@ -226,6 +228,20 @@ mod tests {
             endpoint: endpoint.into(),
             scrape_interval_seconds: 30,
         })
+    }
+
+    #[test]
+    fn extension_service_type_conversions_round_trip() {
+        scenarios!(
+            run = |service_type| {
+                let rpc_type = rpc::DpuExtensionServiceType::from(service_type.clone());
+                Ok::<_, ()>(ExtensionServiceType::from(rpc_type))
+            };
+            "all supported types" {
+                ExtensionServiceType::KubernetesPod => Yields(ExtensionServiceType::KubernetesPod),
+                ExtensionServiceType::DpfHelmChart => Yields(ExtensionServiceType::DpfHelmChart),
+            }
+        );
     }
 
     #[test]

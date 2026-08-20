@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -36,7 +36,9 @@ use db::{
 use futures_util::future::join_all;
 use ipnetwork::IpNetwork;
 use itertools::Itertools;
-use model::extension_service::{ExtensionService, ExtensionServiceVersionInfo};
+use model::extension_service::{
+    ExtensionService, ExtensionServiceType, ExtensionServiceVersionInfo,
+};
 use model::hardware_info::{MachineInventory, MachineInventorySoftwareComponent};
 use model::instance::config::extension_services::InstanceExtensionServiceConfig;
 use model::machine::machine_search_config::MachineSearchConfig;
@@ -177,7 +179,7 @@ async fn get_managed_host_network_config_inner(
         }
     };
 
-    let maybe_instance =
+    let mut maybe_instance =
         Option::<rpc::Instance>::rpc_try_from(snapshot.clone()).map_err(CarbideError::from)?;
 
     let primary_dpu_snapshot = snapshot
@@ -613,6 +615,29 @@ async fn get_managed_host_network_config_inner(
             .map(|service| (service.id, service))
             .collect::<HashMap<_, _>>();
 
+        // The nested Instance is also consumed by the agent. Keep its
+        // extension-service view aligned with the dedicated agent payload so
+        // a DPF service cannot leak through that compatibility field either.
+        let agent_service_ids: HashSet<_> = services_by_id
+            .values()
+            .filter(|service| {
+                service.service_type == ExtensionServiceType::KubernetesPod
+                    && service.deleted.is_none()
+            })
+            .map(|service| service.id.to_string())
+            .collect();
+        if let Some(instance) = maybe_instance.as_mut()
+            && let Some(config) = instance.config.as_mut()
+            && let Some(extension_services) = config.dpu_extension_services.as_mut()
+        {
+            extension_services
+                .service_configs
+                .retain(|config| agent_service_ids.contains(&config.service_id));
+            if extension_services.service_configs.is_empty() {
+                config.dpu_extension_services = None;
+            }
+        }
+
         let mut extension_service_info: Vec<ExtensionServiceInfo> =
             Vec::with_capacity(service_configs.len());
         for config in service_configs {
@@ -623,6 +648,21 @@ async fn get_managed_host_network_config_inner(
                     kind: "ExtensionService",
                     id: config.service_id.to_string(),
                 })?;
+
+            // A DPF Helm service may be active or retained as a removed
+            // attachment while DPF finishes its own cleanup. In either case
+            // it must not produce agent configuration, trigger a version
+            // lookup, or read a credential from Vault.
+            if service.service_type == ExtensionServiceType::DpfHelmChart {
+                continue;
+            }
+            if service.deleted.is_some() {
+                return Err(CarbideError::NotFoundError {
+                    kind: "ExtensionService",
+                    id: config.service_id.to_string(),
+                }
+                .into());
+            }
 
             // The pinned version is looked up individually so the exact
             // `version == config.version` selection (and its full data/credential/observability
@@ -1009,6 +1049,31 @@ pub(crate) async fn record_dpu_network_status(
         agent_version = machine_obs.agent_version,
         "Applied network configs",
     );
+
+    // Instance extension service observation is now separate from network observation.
+    let extension_service_observation = request
+        .dpu_extension_service_version
+        .is_some()
+        .then(|| {
+            model::instance::status::extension_service::InstanceExtensionServiceStatusObservation::try_from(
+                &request,
+            )
+        })
+        .transpose()
+        .map_err(CarbideError::from)?
+        .map(|mut observation| {
+            observation.retain_agent_managed_statuses();
+            observation
+        });
+    if let Some(extension_service_observation) = &extension_service_observation {
+        db::machine::update_extension_service_status_observation(
+            &mut txn,
+            &dpu_machine_id,
+            model::extension_service::ExtensionServiceType::KubernetesPod,
+            extension_service_observation,
+        )
+        .await?;
+    }
 
     // Store the DPU submitted health-report
     let mut health_report = health_report::HealthReport::try_from(

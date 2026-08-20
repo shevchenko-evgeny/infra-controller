@@ -1,0 +1,32 @@
+#
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+
+[package]
+name = "carbide-extension-service-controller"
+version = "0.0.0"
+description = "State controller for DPF Helm chart extension service lifecycle transitions"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+carbide-api-db = { path = "../api-db", default-features = false }
+carbide-api-model = { path = "../api-model", default-features = false }
+carbide-dpf = { path = "../dpf", default-features = false }
+carbide-machine-controller = { path = "../machine-controller", default-features = false }
+carbide-uuid = { path = "../uuid", default-features = false }
+config-version = { path = "../config-version", default-features = false }
+state-controller = { path = "../state-controller" }
+
+async-trait = { workspace = true }
+kube = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

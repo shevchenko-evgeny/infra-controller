@@ -8986,7 +8986,7 @@ enum DpuExtensionServiceType {
   option (carbide.codegen.v1.enum_derive) = "serde::Serialize";
   option (carbide.codegen.v1.enum_derive) = "serde::Deserialize";
   KUBERNETES_POD = 0;
-  // Add supported service types in the future
+  DPF_HELM_CHART = 1;
 }
 
 message UsernamePassword {

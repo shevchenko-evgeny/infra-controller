@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use carbide_utils::none_if_empty::NoneIfEmpty;
 use carbide_uuid::extension_service::ExtensionServiceId;
@@ -49,6 +49,94 @@ impl InstanceExtensionServicesStatus {
         config: Versioned<&InstanceExtensionServicesConfig>,
         observations: &HashMap<MachineId, InstanceExtensionServiceStatusObservation>,
     ) -> Self {
+        let service_types = config
+            .service_configs
+            .iter()
+            .map(|service| (service.service_id, ExtensionServiceType::KubernetesPod))
+            .collect();
+        let required_dpus: Vec<_> = config
+            .service_configs
+            .iter()
+            .map(|service| (service.service_id, service.version, dpu_ids.to_vec()))
+            .collect();
+        let observations = observations
+            .iter()
+            .map(|(machine_id, observation)| {
+                (
+                    *machine_id,
+                    InstanceExtensionServiceObservations::from_agent_observation(
+                        observation.clone(),
+                    ),
+                )
+            })
+            .collect();
+        Self::from_config_and_service_type_observations(
+            config,
+            &service_types,
+            &required_dpus,
+            &observations,
+        )
+    }
+
+    /// Derives status from type-partitioned observations when the caller does
+    /// not have the persisted service-type rows available (notably the pure
+    /// RPC conversion path). A DPF Helm entry is recognizable from its own
+    /// type-keyed observation; otherwise the legacy KubernetesPod path is
+    /// selected. A newly requested DPF service with no observation is still
+    /// reported as unsynced/Unknown, which is the safe result.
+    pub fn from_config_and_type_observations(
+        dpu_ids: &[MachineId],
+        config: Versioned<&InstanceExtensionServicesConfig>,
+        observations: &HashMap<MachineId, InstanceExtensionServiceObservations>,
+    ) -> Self {
+        let service_types = config
+            .service_configs
+            .iter()
+            .map(|service| {
+                let dpf_observed = observations.values().any(|observation| {
+                    observation
+                        .for_service_type(ExtensionServiceType::DpfHelmChart)
+                        .is_some_and(|dpf| {
+                            dpf.extension_service_statuses.iter().any(|status| {
+                                status.service_id == service.service_id
+                                    && status.version == service.version
+                                    && status.service_type == ExtensionServiceType::DpfHelmChart
+                            })
+                        })
+                });
+                (
+                    service.service_id,
+                    if dpf_observed {
+                        ExtensionServiceType::DpfHelmChart
+                    } else {
+                        ExtensionServiceType::KubernetesPod
+                    },
+                )
+            })
+            .collect();
+        let required_dpus: Vec<_> = config
+            .service_configs
+            .iter()
+            .map(|service| (service.service_id, service.version, dpu_ids.to_vec()))
+            .collect();
+        Self::from_config_and_service_type_observations(
+            config,
+            &service_types,
+            &required_dpus,
+            observations,
+        )
+    }
+
+    /// Derives every extension-service status through the observation keyed by
+    /// its persisted service type. The payload is shared by all writers; only
+    /// service-type selection differs. This keeps DPF Helm placement as a
+    /// Stage-1 implementation detail rather than a second status model.
+    pub fn from_config_and_service_type_observations(
+        config: Versioned<&InstanceExtensionServicesConfig>,
+        service_types: &HashMap<ExtensionServiceId, ExtensionServiceType>,
+        required_dpus: &[(ExtensionServiceId, ConfigVersion, Vec<MachineId>)],
+        observations: &HashMap<MachineId, InstanceExtensionServiceObservations>,
+    ) -> Self {
         // This means the instance has no extension services configured and all once terminating
         // services has been terminated from all DPUs and hence not present any more
         if config.service_configs.is_empty() {
@@ -58,28 +146,52 @@ impl InstanceExtensionServicesStatus {
             };
         }
 
-        // Instance allocation rejects non-empty service_configs on zero-DPU
-        // hosts, so, in practice, we *shouldn't* reach here. BUT, if we do,
-        // assume it's from something like a stale pre-validation instance,
-        // and just report unsynced.
-        if dpu_ids.is_empty() {
-            return Self::unsynced_for_config(&config);
-        }
-
         let mut is_configs_synced = true;
         let mut extension_services = vec![];
 
         // Iterate through each configured service and aggregate status from all DPUs
         for service in config.service_configs.iter() {
             let mut dpu_statuses = vec![];
-
+            let Some(service_type) = service_types.get(&service.service_id) else {
+                is_configs_synced = false;
+                extension_services.push(InstanceExtensionServiceStatus {
+                    service_id: service.service_id,
+                    version: service.version,
+                    overall_status: ExtensionServiceDeploymentStatus::Unknown,
+                    dpu_statuses,
+                    removed: service.removed.as_ref().map(ToString::to_string),
+                });
+                continue;
+            };
+            let Some((_, _, dpu_ids)) = required_dpus.iter().find(|(service_id, version, _)| {
+                *service_id == service.service_id && *version == service.version
+            }) else {
+                is_configs_synced = false;
+                extension_services.push(InstanceExtensionServiceStatus {
+                    service_id: service.service_id,
+                    version: service.version,
+                    overall_status: ExtensionServiceDeploymentStatus::Unknown,
+                    dpu_statuses,
+                    removed: service.removed.as_ref().map(ToString::to_string),
+                });
+                continue;
+            };
+            if dpu_ids.is_empty() {
+                is_configs_synced = false;
+            }
             for dpu_id in dpu_ids {
-                match observations.get(dpu_id) {
+                let observation = observations
+                    .get(dpu_id)
+                    .and_then(|observation| observation.for_service_type(service_type.clone()));
+
+                match observation {
                     // DPU has observation with matching config version
                     Some(obs) if obs.config_version == config.version => {
                         // Find the specific service in the DPU's observation
                         let service_status = obs.extension_service_statuses.iter().find(|s| {
-                            s.service_id == service.service_id && s.version == service.version
+                            s.service_id == service.service_id
+                                && s.service_type == *service_type
+                                && s.version == service.version
                         });
 
                         if let Some(service_status) = service_status {
@@ -207,25 +319,6 @@ impl InstanceExtensionServicesStatus {
         ExtensionServiceDeploymentStatus::Unknown
     }
 
-    /// Returns instance extension services status when no DPUs has reported status for the current
-    /// extension service config version
-    fn unsynced_for_config(config: &InstanceExtensionServicesConfig) -> Self {
-        Self {
-            extension_services: config
-                .service_configs
-                .iter()
-                .map(|service| InstanceExtensionServiceStatus {
-                    service_id: service.service_id,
-                    version: service.version,
-                    overall_status: ExtensionServiceDeploymentStatus::Unknown,
-                    dpu_statuses: Vec::new(),
-                    removed: service.removed.as_ref().map(|removed| removed.to_string()),
-                })
-                .collect(),
-            configs_synced: SyncState::Pending,
-        }
-    }
-
     /// Returns `(service_id, extension service config version)` for extension services that are
     /// marked removed and fully `Terminated` on every DPU. Cleanup must use this pair, not
     /// `service_id` alone, because multiple config versions for the same service can exist during
@@ -312,8 +405,11 @@ pub struct ExtensionServiceStatusObservation {
     pub message: String,
 }
 
-/// Observation of extension service statuses reported by a single DPU
-/// This represents what the DPU agent has observed and reported back to the controller
+/// Observation of extension-service statuses for a single DPU.
+///
+/// The payload is deliberately source-neutral.  It is reported by the DPU
+/// agent for KubernetesPod services, by NICo for the Stage-1 DPF Helm
+/// placement contract, and later by DPF for workload status.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceExtensionServiceStatusObservation {
     /// The config version that the DPU has applied for extension services
@@ -326,23 +422,69 @@ pub struct InstanceExtensionServiceStatusObservation {
     /// The status of each extension service running on this DPU
     pub extension_service_statuses: Vec<ExtensionServiceStatusObservation>,
 
-    /// The timestamp when the DPU made this observation
+    /// The timestamp when this source made the observation.
     pub observed_at: DateTime<Utc>,
 }
 
-impl InstanceExtensionServiceStatusObservation {
-    /// Aggregates extension service observations from multiple DPUs
-    /// Returns a map of DPU machine ID to the extension service observation
+/// Current extension-service observations for one DPU, partitioned by service
+/// type.  There is exactly one authoritative status writer for each service
+/// type: the DPU agent for Kubernetes Pod services and, in Stage 1, the NICo
+/// machine controller for DPF Helm chart placement.  A future DPF status
+/// integration replaces the DPF Helm writer for the same key rather than
+/// adding another observation shape or column.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceExtensionServiceObservations {
+    #[serde(default)]
+    pub by_service_type: BTreeMap<String, InstanceExtensionServiceStatusObservation>,
+}
+
+impl InstanceExtensionServiceObservations {
+    fn service_type_key(service_type: ExtensionServiceType) -> String {
+        service_type.to_string()
+    }
+
+    pub fn for_service_type(
+        &self,
+        service_type: ExtensionServiceType,
+    ) -> Option<&InstanceExtensionServiceStatusObservation> {
+        self.by_service_type
+            .get(&Self::service_type_key(service_type))
+    }
+
+    pub fn set_for_service_type(
+        &mut self,
+        service_type: ExtensionServiceType,
+        observation: InstanceExtensionServiceStatusObservation,
+    ) {
+        self.by_service_type
+            .insert(Self::service_type_key(service_type), observation);
+    }
+
+    pub fn from_agent_observation(observation: InstanceExtensionServiceStatusObservation) -> Self {
+        let mut observations = Self::default();
+        observations.set_for_service_type(ExtensionServiceType::KubernetesPod, observation);
+        observations
+    }
+
+    /// Aggregates persisted type-partitioned observations.
     pub fn aggregate_instance_observation(dpu_snapshots: &[Machine]) -> HashMap<MachineId, Self> {
         dpu_snapshots
             .iter()
             .filter_map(|dpu| {
-                dpu.network_status_observation
-                    .as_ref()
-                    .and_then(|obs| obs.extension_service_observation.clone())
-                    .map(|ext_obs| (dpu.id, ext_obs))
+                let observations = dpu.status.extension_service_status_observations.clone();
+                (!observations.by_service_type.is_empty()).then_some((dpu.id, observations))
             })
             .collect()
+    }
+}
+
+impl InstanceExtensionServiceStatusObservation {
+    /// Drops statuses for services which are not managed by the legacy DPU
+    /// agent. DPF Helm services are reconciled through DPF and must never be
+    /// used as an agent status source.
+    pub fn retain_agent_managed_statuses(&mut self) {
+        self.extension_service_statuses
+            .retain(|service| service.service_type == ExtensionServiceType::KubernetesPod);
     }
 
     pub fn any_observed_version_changed(&self, other: &Self) -> bool {
@@ -356,6 +498,7 @@ impl InstanceExtensionServiceStatusObservation {
             HashMap::from_iter(
                 self.extension_service_statuses
                     .iter()
+                    .filter(|service| service.service_type == ExtensionServiceType::KubernetesPod)
                     .map(|svc| (svc.service_id, svc.version)),
             );
         let other_extension_service_versions: HashMap<ExtensionServiceId, ConfigVersion> =
@@ -363,6 +506,7 @@ impl InstanceExtensionServiceStatusObservation {
                 other
                     .extension_service_statuses
                     .iter()
+                    .filter(|service| service.service_type == ExtensionServiceType::KubernetesPod)
                     .map(|svc| (svc.service_id, svc.version)),
             );
 
@@ -497,6 +641,87 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn dpf_helm_status_uses_the_standard_type_keyed_observation() {
+        let dpu_ids = get_dpu_ids();
+        let config_version = ConfigVersion::initial();
+        let service_version = ConfigVersion::initial();
+        let observations = dpu_ids
+            .iter()
+            .map(|dpu_id| {
+                let mut per_type = InstanceExtensionServiceObservations::default();
+                per_type.set_for_service_type(
+                    ExtensionServiceType::DpfHelmChart,
+                    InstanceExtensionServiceStatusObservation {
+                        config_version,
+                        instance_config_version: None,
+                        extension_service_statuses: vec![ExtensionServiceStatusObservation {
+                            service_id: get_test_service_id(),
+                            service_type: ExtensionServiceType::DpfHelmChart,
+                            service_name: String::new(),
+                            version: service_version,
+                            removed: None,
+                            overall_state: ExtensionServiceDeploymentStatus::Running,
+                            components: vec![],
+                            message: String::new(),
+                        }],
+                        observed_at: Utc::now(),
+                    },
+                );
+                (*dpu_id, per_type)
+            })
+            .collect();
+
+        let status = InstanceExtensionServicesStatus::from_config_and_type_observations(
+            &dpu_ids,
+            Versioned::new(&create_service_config(service_version), config_version),
+            &observations,
+        );
+
+        assert_eq!(status.configs_synced, SyncState::Synced);
+        assert_eq!(
+            status.extension_services[0].overall_status,
+            ExtensionServiceDeploymentStatus::Running
+        );
+    }
+
+    #[test]
+    fn aggregate_instance_observation_keeps_service_type_writers_independent() {
+        let mut dpu = crate::test_support::machine_snapshot::dpu_machine(0);
+        let mut observations = InstanceExtensionServiceObservations::default();
+        observations.set_for_service_type(
+            ExtensionServiceType::KubernetesPod,
+            create_observation(
+                ConfigVersion::initial(),
+                ConfigVersion::initial(),
+                ExtensionServiceDeploymentStatus::Running,
+            ),
+        );
+        let mut dpf_observation = create_observation(
+            ConfigVersion::initial(),
+            ConfigVersion::initial(),
+            ExtensionServiceDeploymentStatus::Running,
+        );
+        dpf_observation.extension_service_statuses[0].service_type =
+            ExtensionServiceType::DpfHelmChart;
+        observations.set_for_service_type(ExtensionServiceType::DpfHelmChart, dpf_observation);
+        dpu.status.extension_service_status_observations = observations;
+
+        let aggregated =
+            InstanceExtensionServiceObservations::aggregate_instance_observation(&[dpu.clone()]);
+        let aggregated = &aggregated[&dpu.id];
+        assert!(
+            aggregated
+                .for_service_type(ExtensionServiceType::KubernetesPod)
+                .is_some()
+        );
+        assert!(
+            aggregated
+                .for_service_type(ExtensionServiceType::DpfHelmChart)
+                .is_some()
+        );
     }
 
     struct StatusInput {
@@ -1076,42 +1301,22 @@ mod tests {
     }
 
     #[test]
-    fn extension_service_observations_from_dpu_snapshots() {
+    fn agent_observation_version_comparison_ignores_dpf_helm_statuses() {
         let config_version = ConfigVersion::initial();
         let observation = create_observation(
             config_version,
             ConfigVersion::initial(),
             ExtensionServiceDeploymentStatus::Running,
         );
-        let mut observed_dpu = crate::test_support::machine_snapshot::dpu_machine(0);
-        observed_dpu
-            .network_status_observation
-            .as_mut()
-            .unwrap()
-            .extension_service_observation = Some(observation.clone());
-        let observed_dpu_id = observed_dpu.id;
+        let mut observation_with_dpf_status = observation.clone();
+        let mut dpf_status = observation.extension_service_statuses[0].clone();
+        dpf_status.service_type = ExtensionServiceType::DpfHelmChart;
+        dpf_status.version = ConfigVersion::initial().increment();
+        observation_with_dpf_status
+            .extension_service_statuses
+            .push(dpf_status);
 
-        value_scenarios!(
-            run = |dpu_snapshots: Vec<Machine>| {
-                InstanceExtensionServiceStatusObservation::aggregate_instance_observation(
-                    &dpu_snapshots,
-                )
-            };
-            "without snapshots" {
-                vec![] => HashMap::new(),
-            }
-
-            "snapshot without an extension-service observation" {
-                vec![crate::test_support::machine_snapshot::dpu_machine(1)] => HashMap::new(),
-            }
-
-            "mixed snapshots" {
-                vec![
-                    observed_dpu,
-                    crate::test_support::machine_snapshot::dpu_machine(1),
-                ] => HashMap::from([(observed_dpu_id, observation)]),
-            }
-        );
+        assert!(!observation.any_observed_version_changed(&observation_with_dpf_status));
     }
 
     fn create_observation_two_versions(

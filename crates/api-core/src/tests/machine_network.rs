@@ -1543,7 +1543,11 @@ fn create_extension_service_data(name: &str) -> String {
 
 #[crate::sqlx_test]
 async fn test_managed_host_network_config_with_extension_services(pool: sqlx::PgPool) {
-    let env = api_fixtures::create_test_env(pool).await;
+    let mut config = api_fixtures::get_config();
+    config.dpf.enabled = true;
+    let env =
+        api_fixtures::create_test_env_with_overrides(pool, TestEnvOverrides::with_config(config))
+            .await;
     let segment_id = env.create_vpc_and_tenant_segment().await;
     let mh = create_managed_host(&env).await;
     let dpu_1_id = mh.dpu_ids[0];
@@ -1626,6 +1630,38 @@ async fn test_managed_host_network_config_with_extension_services(pool: sqlx::Pg
         .version
         .clone();
 
+    // DPF services deliberately share the instance's durable attachment
+    // intent here. They must still be absent from the agent-facing response:
+    // the DPU agent never receives their Helm data, credential, or removal
+    // state.
+    let dpf_extension_service = env
+        .api
+        .create_dpu_extension_service(tonic::Request::new(CreateDpuExtensionServiceRequest {
+            service_id: None,
+            service_name: "dpf-test".to_string(),
+            service_type: DpuExtensionServiceType::DpfHelmChart as i32,
+            tenant_organization_id: "best_org".to_string(),
+            description: None,
+            data: r#"{
+                "repoURL": "oci://registry.example.com/charts",
+                "chartName": "agent-must-not-receive-this",
+                "chartVersion": "1.2.3",
+                "security.privileged": false
+            }"#
+            .to_string(),
+            credential: None,
+            observability: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let dpf_service_version = dpf_extension_service
+        .latest_version_info
+        .as_ref()
+        .unwrap()
+        .version
+        .clone();
+
     let es_config = InstanceDpuExtensionServicesConfig {
         service_configs: vec![
             InstanceDpuExtensionServiceConfig {
@@ -1635,6 +1671,10 @@ async fn test_managed_host_network_config_with_extension_services(pool: sqlx::Pg
             InstanceDpuExtensionServiceConfig {
                 service_id: extension_service2.service_id.clone(),
                 version: service2_version.clone(),
+            },
+            InstanceDpuExtensionServiceConfig {
+                service_id: dpf_extension_service.service_id.clone(),
+                version: dpf_service_version,
             },
         ],
     };
@@ -1674,6 +1714,20 @@ async fn test_managed_host_network_config_with_extension_services(pool: sqlx::Pg
         service2_version.clone()
     );
     assert_eq!(response.dpu_extension_services[1].removed, None);
+
+    let nested_extension_services = response
+        .instance
+        .as_ref()
+        .and_then(|instance| instance.config.as_ref())
+        .and_then(|config| config.dpu_extension_services.as_ref())
+        .expect("agent-facing instance config retains the Kubernetes Pod services");
+    assert_eq!(nested_extension_services.service_configs.len(), 2);
+    assert!(
+        nested_extension_services
+            .service_configs
+            .iter()
+            .all(|service| service.service_id != dpf_extension_service.service_id)
+    );
 }
 
 #[crate::sqlx_test]

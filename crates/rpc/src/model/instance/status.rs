@@ -124,7 +124,7 @@ pub fn instance_status_from_config_and_observation(
         );
 
     let extension_services =
-        model::instance::status::extension_service::InstanceExtensionServicesStatus::from_config_and_observations(
+        model::instance::status::extension_service::InstanceExtensionServicesStatus::from_config_and_type_observations(
             &used_dpu_ids,
             extension_services_config,
             &observations.extension_services,

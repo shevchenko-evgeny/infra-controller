@@ -38,6 +38,7 @@ use health_report::{
 use itertools::Itertools as _;
 use model::ConfigValidationError;
 use model::dpa_interface::DpaSearchConfig;
+use model::extension_service::ExtensionService;
 use model::instance::config::InstanceConfig;
 use model::instance::config::extension_services::InstanceExtensionServicesConfig;
 use model::instance::config::infiniband::InstanceInfinibandConfig;
@@ -67,6 +68,7 @@ use crate::handlers::utils::convert_and_log_machine_id;
 use crate::instance::{
     InstanceAllocationRequest, allocate_ib_port_guid, allocate_instance, allocate_network,
     allocate_spx_port_mac, validate_ib_partition_ownership,
+    validate_instance_extension_service_host_compatibility, validate_instance_extension_services,
     validate_instance_vfs_against_dpf_topology, validate_os_definition_usable,
     validate_spx_partition_ownership,
 };
@@ -1337,55 +1339,60 @@ pub(crate) async fn update_instance_config(
         }
     }
 
-    // If extension services are configured, validate the extension service config versions to make
-    // sure the extension service versions all exist and are not deleted. Grabs the locks to make
-    // sure the extension service versions are not deleted by other concurrent requests.
-    if !config.extension_services.service_configs.is_empty() {
-        let service_configs = &config.extension_services.service_configs;
-
-        // Validate no duplicate service IDs (only one version per service allowed)
-        let service_ids: Vec<_> = service_configs.iter().map(|s| s.service_id).collect();
-        let unique_service_ids: std::collections::HashSet<_> = service_ids.iter().collect();
-
-        if service_ids.len() != unique_service_ids.len() {
-            return Err(CarbideError::InvalidArgument(
-                "duplicate extension services in configuration. only one version of each service is allowed".to_string()
+    // Validate extension-service attachment versions while holding the service
+    // and version row locks. DPF Helm and Kubernetes Pod services both carry
+    // their concrete active version in the API and durable configuration.
+    if instance
+        .config
+        .extension_services
+        .is_extension_services_config_update_requested(&config.extension_services)
+    {
+        let service_ids = config
+            .extension_services
+            .service_configs
+            .iter()
+            .map(|service| service.service_id)
+            .chain(
+                instance
+                    .config
+                    .extension_services
+                    .service_configs
+                    .iter()
+                    .map(|service| service.service_id),
             )
-                .into());
-        }
+            .unique()
+            .collect_vec();
+        let services = extension_service::find_by_ids(&mut txn, &service_ids, true)
+            .await?
+            .into_iter()
+            .map(|service| (service.id, service))
+            .collect();
+        let versions =
+            extension_service::find_versions_by_service_ids(&mut txn, &service_ids, true).await?;
+        let existing_active_service_ids = instance
+            .config
+            .extension_services
+            .active_services()
+            .into_iter()
+            .map(|service| service.service_id)
+            .collect();
 
-        // Row level locks on all required extension services
-        let services = extension_service::find_versions_by_service_ids(
+        validate_instance_extension_services(
+            &config.extension_services,
+            &services,
+            &versions,
+            api.runtime_config.dpf.enabled,
+            &existing_active_service_ids,
+        )?;
+
+        update_instance_extension_services_config(
+            &mh_snapshot,
+            &instance,
+            &mut config.extension_services,
+            &services,
             &mut txn,
-            service_configs
-                .iter()
-                .map(|s| s.service_id)
-                .collect_vec()
-                .as_slice(),
-            true,
         )
         .await?;
-
-        for service in service_configs.iter() {
-            if !services.contains_key(&service.service_id) {
-                return Err(CarbideError::FailedPrecondition(format!(
-                    "extension service {} does not exist",
-                    service.service_id,
-                ))
-                .into());
-            }
-            if !services
-                .get(&service.service_id)
-                .unwrap()
-                .contains(&service.version)
-            {
-                return Err(CarbideError::FailedPrecondition(format!(
-                    "extension service {} version {} does not exist or is deleted",
-                    service.service_id, service.version,
-                ))
-                .into());
-            }
-        }
     }
 
     update_instance_network_config(
@@ -1402,14 +1409,6 @@ pub(crate) async fn update_instance_config(
     // the database and increment the IB version number
     update_instance_infiniband_config(&mh_snapshot, &instance, &mut config.infiniband, &mut txn)
         .await?;
-
-    update_instance_extension_services_config(
-        &mh_snapshot,
-        &instance,
-        &mut config.extension_services,
-        &mut txn,
-    )
-    .await?;
 
     tracing::debug!(
         instance_id = %instance.id,
@@ -1782,6 +1781,10 @@ async fn update_instance_extension_services_config(
     mh_snapshot: &ManagedHostStateSnapshot,
     instance: &InstanceSnapshot,
     extension_services: &mut InstanceExtensionServicesConfig,
+    services: &std::collections::HashMap<
+        carbide_uuid::extension_service::ExtensionServiceId,
+        ExtensionService,
+    >,
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(), CarbideError> {
     if !instance
@@ -1805,23 +1808,22 @@ async fn update_instance_extension_services_config(
         return Err(ConfigValidationError::InstanceDeletionIsRequested.into());
     }
 
-    if mh_snapshot.host_snapshot.config.dpf.used_for_ingestion
-        && instance
-            .config
-            .extension_services
-            .has_new_active_services(extension_services)
-    {
-        return Err(CarbideError::FailedPrecondition(format!(
-            "DPU extension services are not supported on DPF-managed host {}",
-            mh_snapshot.host_snapshot.id
-        )));
-    }
-
     // Calculate the new extension services config.
     let new_extension_services_config = instance
         .config
         .extension_services
         .calculate_new_extension_services_config(extension_services);
+
+    // A service being detached remains durably represented with `removed:
+    // true`. Include those entries in the compatibility check so an instance
+    // cannot switch between the agent and DPF delivery paths while either
+    // path still has cleanup in flight.
+    validate_instance_extension_service_host_compatibility(
+        mh_snapshot.host_snapshot.id,
+        mh_snapshot.host_snapshot.config.dpf.used_for_ingestion,
+        &new_extension_services_config,
+        services,
+    )?;
 
     // Persist the extension services config.
     db::instance::update_extension_services_config(
