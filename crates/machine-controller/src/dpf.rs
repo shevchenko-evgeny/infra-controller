@@ -64,13 +64,6 @@ pub trait DpfOperations: Send + Sync + std::fmt::Debug {
     /// Register a DPU device.
     async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError>;
 
-    /// Merge changes into a DPUDevice's DPU-cluster node labels.
-    async fn merge_dpu_device_node_labels(
-        &self,
-        dpu_device_name: &str,
-        changes: BTreeMap<String, Option<String>>,
-    ) -> Result<(), DpfError>;
-
     /// Register a DPU node.
     async fn register_dpu_node(&self, info: DpuNodeInfo) -> Result<(), DpfError>;
 
@@ -604,16 +597,6 @@ impl std::fmt::Debug for DpfSdkOps {
 impl DpfOperations for DpfSdkOps {
     async fn register_dpu_device(&self, info: DpuDeviceInfo) -> Result<(), DpfError> {
         self.sdk.register_dpu_device(info).await
-    }
-
-    async fn merge_dpu_device_node_labels(
-        &self,
-        dpu_device_name: &str,
-        changes: BTreeMap<String, Option<String>>,
-    ) -> Result<(), DpfError> {
-        self.sdk
-            .merge_dpu_device_node_labels(dpu_device_name, changes)
-            .await
     }
 
     async fn register_dpu_node(&self, info: DpuNodeInfo) -> Result<(), DpfError> {

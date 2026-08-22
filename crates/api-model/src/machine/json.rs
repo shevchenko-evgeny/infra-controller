@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::bmc_info::BmcInfo;
 use crate::controller_outcome::PersistentStateHandlerOutcome;
 use crate::hardware_info::{MachineInventory, MachineNvLinkInfo};
-use crate::instance::status::extension_service::InstanceExtensionServiceObservations;
+use crate::instance::status::extension_service::InstanceExtensionServiceStatusObservationByType;
 use crate::machine::health_override::HealthReportSources;
 use crate::machine::infiniband::MachineInfinibandStatusObservation;
 use crate::machine::network::{MachineNetworkStatusObservation, ManagedHostNetworkConfig};
@@ -70,7 +70,7 @@ pub struct MachineSnapshotPgJson {
     pub nvlink_status_observation: Option<MachineNvLinkStatusObservation>,
     pub spx_status_observation: Option<MachineSpxStatusObservation>,
     #[serde(default)]
-    pub extension_service_status_observations: InstanceExtensionServiceObservations,
+    pub extension_service_status_observations: InstanceExtensionServiceStatusObservationByType,
     pub controller_state_version: String,
     pub controller_state: ManagedHostState,
     pub last_discovery_time: Option<DateTime<Utc>>,

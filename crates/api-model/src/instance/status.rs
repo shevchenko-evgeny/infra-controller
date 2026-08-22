@@ -86,7 +86,7 @@ pub struct InstanceStatusObservations {
     /// Observed extension-service status, partitioned by service type. Each
     /// service type has one authoritative writer.
     pub extension_services:
-        HashMap<MachineId, extension_service::InstanceExtensionServiceObservations>,
+        HashMap<MachineId, extension_service::InstanceExtensionServiceStatusObservationByType>,
 
     /// Has the instance phoned home?
     pub phone_home_last_contact: Option<chrono::DateTime<chrono::Utc>>,

@@ -64,7 +64,7 @@ impl InstanceExtensionServicesStatus {
             .map(|(machine_id, observation)| {
                 (
                     *machine_id,
-                    InstanceExtensionServiceObservations::from_agent_observation(
+                    InstanceExtensionServiceStatusObservationByType::from_agent_observation(
                         observation.clone(),
                     ),
                 )
@@ -87,7 +87,7 @@ impl InstanceExtensionServicesStatus {
     pub fn from_config_and_type_observations(
         dpu_ids: &[MachineId],
         config: Versioned<&InstanceExtensionServicesConfig>,
-        observations: &HashMap<MachineId, InstanceExtensionServiceObservations>,
+        observations: &HashMap<MachineId, InstanceExtensionServiceStatusObservationByType>,
     ) -> Self {
         let service_types = config
             .service_configs
@@ -135,7 +135,7 @@ impl InstanceExtensionServicesStatus {
         config: Versioned<&InstanceExtensionServicesConfig>,
         service_types: &HashMap<ExtensionServiceId, ExtensionServiceType>,
         required_dpus: &[(ExtensionServiceId, ConfigVersion, Vec<MachineId>)],
-        observations: &HashMap<MachineId, InstanceExtensionServiceObservations>,
+        observations: &HashMap<MachineId, InstanceExtensionServiceStatusObservationByType>,
     ) -> Self {
         // This means the instance has no extension services configured and all once terminating
         // services has been terminated from all DPUs and hence not present any more
@@ -433,12 +433,12 @@ pub struct InstanceExtensionServiceStatusObservation {
 /// integration replaces the DPF Helm writer for the same key rather than
 /// adding another observation shape or column.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstanceExtensionServiceObservations {
+pub struct InstanceExtensionServiceStatusObservationByType {
     #[serde(default)]
     pub by_service_type: BTreeMap<String, InstanceExtensionServiceStatusObservation>,
 }
 
-impl InstanceExtensionServiceObservations {
+impl InstanceExtensionServiceStatusObservationByType {
     fn service_type_key(service_type: ExtensionServiceType) -> String {
         service_type.to_string()
     }
@@ -651,7 +651,7 @@ mod tests {
         let observations = dpu_ids
             .iter()
             .map(|dpu_id| {
-                let mut per_type = InstanceExtensionServiceObservations::default();
+                let mut per_type = InstanceExtensionServiceStatusObservationByType::default();
                 per_type.set_for_service_type(
                     ExtensionServiceType::DpfHelmChart,
                     InstanceExtensionServiceStatusObservation {
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn aggregate_instance_observation_keeps_service_type_writers_independent() {
         let mut dpu = crate::test_support::machine_snapshot::dpu_machine(0);
-        let mut observations = InstanceExtensionServiceObservations::default();
+        let mut observations = InstanceExtensionServiceStatusObservationByType::default();
         observations.set_for_service_type(
             ExtensionServiceType::KubernetesPod,
             create_observation(
@@ -710,7 +710,9 @@ mod tests {
         dpu.status.extension_service_status_observations = observations;
 
         let aggregated =
-            InstanceExtensionServiceObservations::aggregate_instance_observation(&[dpu.clone()]);
+            InstanceExtensionServiceStatusObservationByType::aggregate_instance_observation(&[
+                dpu.clone()
+            ]);
         let aggregated = &aggregated[&dpu.id];
         assert!(
             aggregated

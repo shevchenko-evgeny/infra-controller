@@ -231,17 +231,25 @@ mod tests {
     }
 
     #[test]
-    fn extension_service_type_conversions_round_trip() {
-        scenarios!(
-            run = |service_type| {
-                let rpc_type = rpc::DpuExtensionServiceType::from(service_type.clone());
-                Ok::<_, ()>(ExtensionServiceType::from(rpc_type))
-            };
-            "all supported types" {
-                ExtensionServiceType::KubernetesPod => Yields(ExtensionServiceType::KubernetesPod),
-                ExtensionServiceType::DpfHelmChart => Yields(ExtensionServiceType::DpfHelmChart),
-            }
-        );
+    fn extension_service_type_conversions() {
+        let cases = [
+            (
+                ExtensionServiceType::KubernetesPod,
+                rpc::DpuExtensionServiceType::KubernetesPod,
+            ),
+            (
+                ExtensionServiceType::DpfHelmChart,
+                rpc::DpuExtensionServiceType::DpfHelmChart,
+            ),
+        ];
+
+        for (service_type, rpc_type) in cases {
+            assert_eq!(
+                rpc::DpuExtensionServiceType::from(service_type.clone()),
+                rpc_type
+            );
+            assert_eq!(ExtensionServiceType::from(rpc_type), service_type);
+        }
     }
 
     #[test]

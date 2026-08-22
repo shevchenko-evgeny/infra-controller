@@ -40,7 +40,7 @@ use strum_macros::EnumIter;
 use self::network::{MachineNetworkStatusObservation, ManagedHostNetworkConfig};
 use super::StateSla;
 use super::instance::snapshot::InstanceSnapshot;
-use super::instance::status::extension_service::InstanceExtensionServiceObservations;
+use super::instance::status::extension_service::InstanceExtensionServiceStatusObservationByType;
 use super::instance::status::network::InstanceNetworkStatusObservation;
 use super::machine_boot_interface::{MachineBootInterface, MachineBootInterfaceTarget};
 use super::metadata::Metadata;
@@ -200,7 +200,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ManagedHostStateSnapshot {
             instance.observations.network =
                 InstanceNetworkStatusObservation::aggregate_instance_observation(&dpu_snapshots);
             instance.observations.extension_services =
-                InstanceExtensionServiceObservations::aggregate_instance_observation(
+                InstanceExtensionServiceStatusObservationByType::aggregate_instance_observation(
                     &dpu_snapshots,
                 );
         }
