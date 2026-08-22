@@ -724,6 +724,7 @@ impl MachineStateHandler {
                         );
 
                         let mut txn = ctx.services.db_pool.begin().await?;
+                        db::machine::lock_by_id(txn.as_mut(), host_machine_id).await?;
                         db::machine::update_dpu_agent_health_report(
                             &mut txn,
                             dpu_machine_id,
@@ -1282,6 +1283,8 @@ impl MachineStateHandler {
                         // settled tick also clears the one-shot force flag in the same
                         // transaction.
                         let mut txn = ctx.services.db_pool.begin().await?;
+                        db::machine::lock_by_id(txn.as_mut(), &mh_snapshot.host_snapshot.id)
+                            .await?;
                         if matches!(step, RotationStep::Settled) {
                             rotation::clear_forced_bmc_requests(&mut txn, mh_snapshot).await?;
                         }
@@ -2699,6 +2702,13 @@ impl StateHandler for MachineStateHandler {
             );
         }
 
+        // Lock the host before any writes in the deferred batch so those writes
+        // follow the same host-to-DPU order as power approval and force-delete.
+        // A handler that returns its own transaction must acquire this lock
+        // before it writes a DPU or Instance; the batch is applied afterward.
+        ctx.pending_db_writes.push(MachineWriteOp::LockMachine {
+            machine_id: *host_machine_id,
+        });
         self.record_metrics(mh_snapshot, ctx);
         self.record_health_history(mh_snapshot, ctx);
 
@@ -3712,6 +3722,7 @@ async fn handle_dpu_reprovision(
             handler_host_power_control(state, ctx, SystemPowerControl::ForceRestart).await?;
 
             let mut txn = ctx.services.db_pool.begin().await?;
+            db::machine::lock_by_id(txn.as_mut(), &state.host_snapshot.id).await?;
 
             // Clear reprovisioning requests only after the terminal host reboot is accepted.
             for dpu_snapshot in &state.dpu_snapshots {
@@ -8609,6 +8620,7 @@ impl StateHandler for InstanceStateHandler {
 
                     // Delete from database now. Once done, reboot and move to next state.
                     let mut txn = ctx.services.db_pool.begin().await?;
+                    db::machine::lock_by_id(txn.as_mut(), &instance.machine_id).await?;
                     db::instance::delete(instance.id, &mut txn)
                         .await
                         .map_err(|err| StateHandlerError::GenericError(err.into()))?;
@@ -8922,6 +8934,11 @@ async fn cleanup_terminated_extension_services(
         .extension_services
         .remove_terminated_services(&terminated_service_keys);
 
+    // Instance configuration and lifecycle transitions lock the owning Machine
+    // before the Instance. Keep the controller transaction in that same order;
+    // it persists the Machine outcome after this cleanup write.
+    db::machine::lock_by_id(txn, &instance.machine_id).await?;
+
     db::instance::update_extension_services_config(
         txn,
         instance.id,
@@ -8984,6 +9001,7 @@ async fn handle_instance_network_config_update_request(
 
             // Update requested network config and increment version.
             let mut txn = ctx.services.db_pool.begin().await?;
+            db::machine::lock_by_id(txn.as_mut(), &instance.machine_id).await?;
             db::instance::update_network_config(
                 txn.as_mut(),
                 instance.id,
@@ -9025,6 +9043,7 @@ async fn handle_instance_network_config_update_request(
         }
         NetworkConfigUpdateState::ReleaseOldResources => {
             let mut txn = ctx.services.db_pool.begin().await?;
+            db::machine::lock_by_id(txn.as_mut(), &instance.machine_id).await?;
             // Identify all the resources which have to be released.
             // Release Ips.
             // Release segments.

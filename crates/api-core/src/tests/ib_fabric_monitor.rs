@@ -36,13 +36,12 @@ use crate::tests::common::api_fixtures::instance::create_instance_with_ib_config
 use crate::tests::common::api_fixtures::{
     TestEnv, TestEnvOverrides, TestManagedHost, create_managed_host,
 };
-use crate::tests::common::postgres::wait_for_blocked_query;
+use crate::tests::common::postgres::{
+    MACHINE_SNAPSHOT_LOCK_QUERY_MARKER, insert_retired_ib_membership, wait_for_blocked_query,
+};
 
 const MANAGED_TEST_PKEY: u16 = 50;
 const UNMANAGED_TEST_PKEY: u16 = 0x101;
-// `pg_stat_activity.query` can truncate long statements before their locking
-// clause, so concurrency tests match the visible start of the `Machine` query.
-const MACHINE_LOCK_QUERY_MARKER: &str = "SELECT row_to_json";
 
 /// `enabled_ib_test_config` builds the test-specific enabled IB configuration
 /// shared by monitor fixtures.
@@ -63,19 +62,6 @@ fn retired_membership(fabric: &str, pkey: PartitionKey, guid: &str) -> IbMembers
         pkey,
         guid: guid.to_string(),
     }
-}
-
-/// `insert_retired_membership` is a test-specific helper that seeds the
-/// monitor's durable input directly. The production writer is tracked by
-/// https://github.com/NVIDIA/infra-controller/issues/5147.
-async fn insert_retired_membership(pool: &sqlx::PgPool, membership: &IbMembership) {
-    sqlx::query("INSERT INTO retired_ib_memberships (fabric, pkey, guid) VALUES ($1, $2, $3)")
-        .bind(membership.fabric.clone())
-        .bind(i32::from(u16::from(membership.pkey)))
-        .bind(membership.guid.clone())
-        .execute(pool)
-        .await
-        .unwrap();
 }
 
 /// `retired_memberships` is a test-specific helper that reads every record in
@@ -309,7 +295,7 @@ async fn retired_membership_repairs_a_delayed_bind_after_monitor_restart(pool: s
         .bind_ib_ports(ib_network(pkey), vec![guid.to_string()])
         .await
         .unwrap();
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     let first_monitor = new_ib_monitor(&env);
     assert_eq!(first_monitor.run_single_iteration().await.unwrap(), 1);
@@ -349,7 +335,7 @@ async fn retired_membership_outside_managed_range_is_left_alone(pool: sqlx::PgPo
         .bind_ib_ports(ib_network(pkey), vec![guid.to_string()])
         .await
         .unwrap();
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     assert_eq!(
         new_ib_monitor(&env).run_single_iteration().await.unwrap(),
@@ -396,7 +382,7 @@ async fn duplicate_fabric_ownership_leaves_retired_membership_alone(pool: sqlx::
         .bind_ib_ports(ib_network(pkey), vec![guid.to_string()])
         .await
         .unwrap();
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     let duplicate_ownership_metrics = MetricsCapture::start();
     assert_eq!(
@@ -469,7 +455,7 @@ async fn duplicate_machine_ownership_leaves_retired_membership_alone(pool: sqlx:
         .bind_ib_ports(ib_network(pkey), vec![guid.clone()])
         .await
         .unwrap();
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     let duplicate_ownership_metrics = MetricsCapture::start();
     assert_eq!(
@@ -508,7 +494,7 @@ async fn retired_membership_retries_after_ufm_failure(pool: sqlx::PgPool) {
         .bind_ib_ports(ib_network(pkey), vec![guid.to_string()])
         .await
         .unwrap();
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
     mock.set_unbind_failure(true);
 
     let failure_metrics = MetricsCapture::start();
@@ -549,7 +535,7 @@ async fn retired_membership_retries_after_ufm_failure(pool: sqlx::PgPool) {
 async fn membership_state_lookup_failure_defers_only_failed_membership(pool: sqlx::PgPool) {
     let (env, managed_host, _, pkey, guid) = live_ib_instance(pool.clone()).await;
     let retired = retired_membership(DEFAULT_IB_FABRIC_NAME, pkey, &guid);
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     let fabric = env
         .ib_fabric_manager
@@ -604,7 +590,7 @@ async fn membership_state_lookup_failure_defers_only_failed_membership(pool: sql
     retired_membership_gate.commit().await.unwrap();
 
     let monitor_pid =
-        wait_for_blocked_query(&pool, machine_gate_pid, MACHINE_LOCK_QUERY_MARKER).await;
+        wait_for_blocked_query(&pool, machine_gate_pid, MACHINE_SNAPSHOT_LOCK_QUERY_MARKER).await;
     let cancelled: bool = sqlx::query_scalar("SELECT pg_cancel_backend($1)")
         .bind(monitor_pid)
         .fetch_one(&pool)
@@ -664,7 +650,7 @@ async fn live_membership_is_unbound_after_instance_deletion_while_retired_record
         retired_membership(DEFAULT_IB_FABRIC_NAME, pkey, "other-guid"),
     ];
     for membership in std::iter::once(&exact).chain(&unrelated) {
-        insert_retired_membership(&pool, membership).await;
+        insert_retired_ib_membership(&pool, membership).await;
     }
     let all_records = std::iter::once(exact.clone())
         .chain(unrelated)
@@ -712,7 +698,7 @@ async fn live_membership_is_unbound_after_instance_deletion_while_retired_record
 async fn membership_reused_after_snapshot_is_not_unbound(pool: sqlx::PgPool) {
     let (env, _, instance_id, pkey, guid) = live_ib_instance(pool.clone()).await;
     let retired = retired_membership(DEFAULT_IB_FABRIC_NAME, pkey, &guid);
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
     let fabric = env
         .ib_fabric_manager
         .new_client(DEFAULT_IB_FABRIC_NAME)
@@ -779,7 +765,7 @@ async fn membership_reused_after_snapshot_is_not_unbound(pool: sqlx::PgPool) {
 async fn membership_removed_from_hardware_after_snapshot_stays_retired(pool: sqlx::PgPool) {
     let (env, managed_host, _, pkey, guid) = live_ib_instance(pool.clone()).await;
     let retired = retired_membership(DEFAULT_IB_FABRIC_NAME, pkey, &guid);
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
     let fabric = env
         .ib_fabric_manager
         .new_client(DEFAULT_IB_FABRIC_NAME)
@@ -843,7 +829,7 @@ async fn retired_membership_checks_force_deletion_after_machine_wait(pool: sqlx:
         .await
         .unwrap();
     assert!(!membership_is_present(&fabric, pkey, &guid).await);
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
 
     // Hold the retired membership table until the monitor has read the live
     // `Instance` and recorded the missing membership. This fixes the stale
@@ -880,7 +866,12 @@ async fn retired_membership_checks_force_deletion_after_machine_wait(pool: sqlx:
     );
 
     query_gate.commit().await.unwrap();
-    wait_for_blocked_query(&pool, force_deletion_pid, MACHINE_LOCK_QUERY_MARKER).await;
+    wait_for_blocked_query(
+        &pool,
+        force_deletion_pid,
+        MACHINE_SNAPSHOT_LOCK_QUERY_MARKER,
+    )
+    .await;
     force_deletion.commit().await.unwrap();
 
     assert_eq!(monitor_iteration.await.unwrap().unwrap(), 0);
@@ -941,9 +932,9 @@ async fn deleted_instance_keeps_the_retired_membership(pool: sqlx::PgPool) {
         .unwrap();
     assert!(membership_is_present(&fabric, pkey, &guid).await);
 
-    // Normal release first marks the `Instance` deleted. Until the membership
-    // is retired, the existing monitor behavior still treats its IB
-    // configuration as expected.
+    // Model legacy or incomplete state where an `Instance` was marked deleted
+    // without atomically recording its membership. Until the membership is
+    // retired, the monitor still treats its IB configuration as expected.
     let mut txn = pool.begin().await.unwrap();
     db::instance::mark_as_deleted(instance_id, txn.as_mut())
         .await
@@ -956,7 +947,7 @@ async fn deleted_instance_keeps_the_retired_membership(pool: sqlx::PgPool) {
 
     // The durable record, rather than terminal `Instance` state by itself,
     // makes the monitor remove the membership.
-    insert_retired_membership(&pool, &retired).await;
+    insert_retired_ib_membership(&pool, &retired).await;
     assert_eq!(monitor.run_single_iteration().await.unwrap(), 1);
 
     assert!(!membership_is_present(&fabric, pkey, &guid).await);

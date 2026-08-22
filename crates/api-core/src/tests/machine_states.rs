@@ -99,6 +99,7 @@ use crate::tests::common::api_fixtures::{
     on_demand_machine_validation, update_time_params,
 };
 use crate::tests::common::attestation::spdm_attestation_run_to_failed_then_to_success;
+use crate::tests::common::postgres::run_dpu_write_with_host_lock_order_probe;
 use crate::tests::instance_ipxe_behaviors::create_instance;
 
 async fn discover_dpu_bmc_ip_for_machine_creator_state_test(
@@ -1347,7 +1348,13 @@ async fn test_dpu_heartbeat(pool: sqlx::PgPool) -> sqlx::Result<()> {
     // Run the state state handler *twice* because metrics are reported before
     // state transitions occur in `handle_object_state`. Thus, we can only see
     // the updated metrics set in the first iteration by running another round.
-    env.run_machine_state_controller_iteration().await;
+    run_dpu_write_with_host_lock_order_probe(
+        &env.pool,
+        mh.id,
+        mh.dpu().id,
+        env.run_machine_state_controller_iteration(),
+    )
+    .await;
     env.run_machine_state_controller_iteration().await;
 
     // Now the network should be marked unhealthy

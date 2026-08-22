@@ -287,6 +287,7 @@ pub(crate) async fn handle_rotating_dpu_uefi(
             handler_restart_dpu(dpu, ctx, dpf_used_for_ingestion).await?;
 
             let mut txn = db_pool.begin().await?;
+            db::machine::lock_by_id(txn.as_mut(), &state.host_snapshot.id).await?;
             let promoted = db::credential_rotation::promote_rotating_to_current(
                 &mut txn,
                 dpu_bmc_mac,
@@ -321,6 +322,7 @@ pub(crate) async fn handle_rotating_dpu_uefi(
             let quarantined_until =
                 db::credential_rotation::backoff_until(prior_attempts, chrono::Utc::now());
             let mut txn = db_pool.begin().await?;
+            db::machine::lock_by_id(txn.as_mut(), &state.host_snapshot.id).await?;
             db::credential_rotation::increment_rotate_attempt(
                 &mut txn,
                 dpu_bmc_mac,

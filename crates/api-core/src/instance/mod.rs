@@ -41,6 +41,8 @@ use itertools::Itertools;
 use model::ConfigValidationError;
 use model::dpa_interface::{DpaInterface, DpaSearchConfig};
 use model::hardware_info::InfinibandInterface;
+use model::ib::{DEFAULT_IB_FABRIC_NAME, IbMembership};
+use model::ib_partition::PartitionKey;
 use model::instance::NewInstance;
 use model::instance::config::InstanceConfig;
 use model::instance::config::infiniband::InstanceInfinibandConfig;
@@ -1439,6 +1441,84 @@ pub(crate) fn allocate_ib_port_guid(
     Ok(updated_ib_config)
 }
 
+/// Loads the stored PKeys needed to resolve exact memberships for `configs`.
+///
+/// A referenced partition without a stored PKey is omitted here and rejected
+/// when its config is resolved by [`ib_memberships_from_config`].
+pub(crate) async fn load_ib_partition_pkeys(
+    txn: &mut PgConnection,
+    configs: &[&InstanceInfinibandConfig],
+) -> CarbideResult<HashMap<IBPartitionId, PartitionKey>> {
+    let partition_ids = configs
+        .iter()
+        .flat_map(|config| {
+            config
+                .ib_interfaces
+                .iter()
+                .map(|interface| interface.ib_partition_id)
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if partition_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    Ok(db::ib_partition::find_by(
+        &mut *txn,
+        ObjectColumnFilter::List(ib_partition::IdColumn, &partition_ids),
+    )
+    .await?
+    .into_iter()
+    .filter_map(|partition| {
+        partition
+            .status
+            .and_then(|status| status.pkey)
+            .map(|pkey| (partition.id, pkey))
+    })
+    .collect())
+}
+
+/// Resolves one IB config into exact memberships on the supported default
+/// fabric.
+///
+/// Each membership uses the allocated interface GUID and the referenced
+/// partition's stored PKey. Memberships are returned in stable row-lock
+/// acquisition order. A missing partition, PKey, or GUID is incomplete state,
+/// so the operation fails without returning a partial set.
+pub(crate) fn ib_memberships_from_config(
+    config: &InstanceInfinibandConfig,
+    pkeys: &HashMap<IBPartitionId, PartitionKey>,
+) -> CarbideResult<BTreeSet<IbMembership>> {
+    config
+        .ib_interfaces
+        .iter()
+        .map(|interface| {
+            let pkey = pkeys
+                .get(&interface.ib_partition_id)
+                .copied()
+                .ok_or_else(|| {
+                    CarbideError::internal(format!(
+                        "InfiniBand partition {} has no valid PKey",
+                        interface.ib_partition_id
+                    ))
+                })?;
+            let guid = interface.guid.clone().ok_or_else(|| {
+                CarbideError::internal(format!(
+                    "InfiniBand interface for partition {} has no allocated GUID",
+                    interface.ib_partition_id
+                ))
+            })?;
+            Ok(IbMembership {
+                fabric: DEFAULT_IB_FABRIC_NAME.to_string(),
+                pkey,
+                guid,
+            })
+        })
+        .collect()
+}
+
 /// sort ib device by slot and add devices with the same name are added to hashmap
 pub(crate) fn sort_ib_by_slot(
     ib_hw_info_vec: &[InfinibandInterface],
@@ -2184,7 +2264,24 @@ pub(crate) async fn batch_allocate_instances(
         .iter()
         .map(|(id, ver, cfg)| (*id, *ver, cfg))
         .collect();
+    let ib_configs = ib_config_updates
+        .iter()
+        .map(|(_, _, config)| config)
+        .collect::<Vec<_>>();
+    let ib_partition_pkeys = load_ib_partition_pkeys(txn.as_mut(), &ib_configs).await?;
+    let assigned_ib_memberships = ib_configs
+        .into_iter()
+        .map(|config| ib_memberships_from_config(config, &ib_partition_pkeys))
+        .collect::<CarbideResult<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
     db::instance::batch_update_ib_config(&mut txn, &ib_refs, false).await?;
+    // The Machine rows are still locked here. Remove an exact retired record
+    // only after its live config write succeeds in this same transaction.
+    for membership in assigned_ib_memberships {
+        db::retired_ib_membership::remove_for_reuse(txn.as_mut(), &membership).await?;
+    }
 
     let nvlink_refs: Vec<_> = nvlink_config_updates
         .iter()
@@ -2471,8 +2568,69 @@ pub(crate) fn allocate_spx_port_mac(
 mod tests {
     use carbide_test_support::Outcome::*;
     use carbide_test_support::{Case, Check, check_cases, check_values, value_scenarios};
+    use model::instance::config::infiniband::InstanceIbInterfaceConfig;
 
     use super::*;
+
+    /// Test-specific helper that builds one allocated physical IB interface.
+    fn ib_interface(partition_id: IBPartitionId, guid: Option<&str>) -> InstanceIbInterfaceConfig {
+        InstanceIbInterfaceConfig {
+            function_id: InterfaceFunctionId::Physical {},
+            ib_partition_id: partition_id,
+            pf_guid: guid.map(str::to_string),
+            guid: guid.map(str::to_string),
+            device: "test-device".to_string(),
+            vendor: None,
+            device_instance: 0,
+        }
+    }
+
+    #[test]
+    fn ib_memberships_require_exact_partition_and_guid_data() {
+        let partition_a = IBPartitionId::new();
+        let partition_b = IBPartitionId::new();
+        let pkey_a = PartitionKey::try_from(0x101).unwrap();
+        let pkey_b = PartitionKey::try_from(0x102).unwrap();
+        check_cases(
+            [
+                Case {
+                    scenario: "one exact membership",
+                    input: (
+                        InstanceInfinibandConfig {
+                            ib_interfaces: vec![ib_interface(partition_a, Some("guid-a"))],
+                        },
+                        HashMap::from([(partition_a, pkey_a)]),
+                    ),
+                    expect: Yields(BTreeSet::from([IbMembership {
+                        fabric: DEFAULT_IB_FABRIC_NAME.to_string(),
+                        pkey: pkey_a,
+                        guid: "guid-a".to_string(),
+                    }])),
+                },
+                Case {
+                    scenario: "referenced partition has no PKey",
+                    input: (
+                        InstanceInfinibandConfig {
+                            ib_interfaces: vec![ib_interface(partition_b, Some("guid-b"))],
+                        },
+                        HashMap::from([(partition_a, pkey_a)]),
+                    ),
+                    expect: Fails,
+                },
+                Case {
+                    scenario: "interface has no allocated GUID",
+                    input: (
+                        InstanceInfinibandConfig {
+                            ib_interfaces: vec![ib_interface(partition_b, None)],
+                        },
+                        HashMap::from([(partition_b, pkey_b)]),
+                    ),
+                    expect: Fails,
+                },
+            ],
+            |(config, pkeys)| ib_memberships_from_config(&config, &pkeys).map_err(drop),
+        );
+    }
 
     #[test]
     fn interface_needs_prefix_allocation_only_without_durable_results() {

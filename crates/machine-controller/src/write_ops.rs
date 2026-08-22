@@ -38,19 +38,34 @@ use state_controller::state_handler::StateHandlerError;
 ///   long-running operation next (like rebooting a host) and we don't want to hold the transaction
 ///   across an await point.
 ///
-/// *NOTE*: We should not be adding any new cases here.
+/// New deferred mutation variants should remain exceptional. Prefer structuring
+/// state-handler work in three phases:
 ///
-/// The best way to structure operations in a state handler are to break them up into 3 phases:
+/// 1. DB read: Get data needed from the database with `DbReader` or `PgPool`,
+///    without requiring a transaction.
+/// 2. External operations: Await non-database work.
+/// 3. DB write: Perform the writes in a transaction, then return it through
+///    [`StateHandlerOutcome::with_txn`].
 ///
-/// 1. DB read: Get data needed from the database with DbReader or PgPool, not requiring a transaction
-/// 2. External operations: Anything non-db-related that you need to `.await`
-/// 3. DB write: Write anything you need to in a transaction, then pass it back with [`StateHandlerOutcome::with_txn`].
-///
-/// MachineWriteOp exists for cases where we need to register writes to the database *before* we
-/// call slow external operations, but this is mostly out of convenience. Ideally all states should
-/// match the pattern above, and the best fix is to refactor the state machine to do so, and not
-/// introduce more MachineWriteOp cases.
+/// `MachineWriteOp` exists for writes that must be registered before slow
+/// external work and for transaction-ordering barriers shared by those writes.
+/// Most states should use the three-phase structure instead of adding a variant.
+/// [`MachineWriteOp::LockMachine`] is coordination-only: it establishes the
+/// host-first row-lock order within an existing deferred-write batch and does
+/// not represent a domain mutation. It cannot reorder writes a handler already
+/// performed in a transaction returned through [`StateHandlerOutcome::with_txn`].
 pub enum MachineWriteOp {
+    /// Acquires the host `Machine` row lock for the remainder of the
+    /// deferred-write transaction.
+    ///
+    /// Queue this before any operation in the same batch that may write an
+    /// attached DPU `Machine` or the host's `Instance`. A handler-owned
+    /// transaction must acquire the host lock before making either write; the
+    /// deferred batch runs afterward. This barrier does not mutate the host row.
+    LockMachine {
+        /// The host `Machine` whose row is locked.
+        machine_id: MachineId,
+    },
     UpdateRebootRequestedTime {
         machine_id: MachineId,
         mode: MachineLastRebootRequestedMode,
@@ -117,6 +132,9 @@ impl WriteOp for MachineWriteOp {
     ) -> Result<(), StateHandlerError> {
         use MachineWriteOp::*;
         match *self {
+            LockMachine { machine_id } => {
+                db::machine::lock_by_id(txn.as_mut(), &machine_id).await?
+            }
             UpdateRebootRequestedTime {
                 machine_id,
                 mode,

@@ -163,6 +163,30 @@ pub async fn find_one(
         .pop())
 }
 
+/// Locks a Machine row without loading its full snapshot.
+///
+/// The row remains locked until `txn` ends. Returns
+/// [`DatabaseError::NotFoundError`] when `machine_id` does not identify a
+/// persisted `Machine`.
+pub async fn lock_by_id(
+    txn: &mut PgConnection,
+    machine_id: &MachineId,
+) -> Result<(), DatabaseError> {
+    let query = "SELECT id FROM machines WHERE id = $1 FOR UPDATE";
+    let locked_machine_id = sqlx::query_scalar::<_, MachineId>(query)
+        .bind(machine_id)
+        .fetch_optional(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+
+    locked_machine_id
+        .map(|_| ())
+        .ok_or_else(|| DatabaseError::NotFoundError {
+            kind: "machine",
+            id: machine_id.to_string(),
+        })
+}
+
 pub async fn find_existing_machine(
     txn: &mut PgConnection,
     macaddr: MacAddress,

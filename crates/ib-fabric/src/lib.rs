@@ -547,8 +547,8 @@ impl IbFabricMonitor {
     }
 
     /// `membership_is_still_needed` checks current `Machine` and `Instance`
-    /// state after waiting for the `Machine` update used by allocation and
-    /// `force-delete` operations. UFM work remains outside this transaction. A
+    /// state after waiting for the `Machine` update used by Instance lifecycle
+    /// and controller operations. UFM work remains outside this transaction. A
     /// later monitor pass corrects a UFM change that finishes after this check.
     async fn membership_is_still_needed(
         &self,

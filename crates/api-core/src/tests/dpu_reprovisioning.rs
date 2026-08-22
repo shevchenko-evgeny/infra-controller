@@ -47,6 +47,7 @@ use crate::tests::common::api_fixtures::{
     TestEnv, TestMachine, TestManagedHost, create_managed_host, forge_agent_control,
     update_time_params,
 };
+use crate::tests::common::postgres::run_dpu_write_with_host_lock_order_probe;
 
 const DGX_H100_INFO_JSON: &[u8] = br#"{
     "machine_type": "x86_64",
@@ -796,7 +797,13 @@ async fn test_dpu_for_reprovisioning_with_no_firmware_upgrade(pool: sqlx::PgPool
         }),
     );
 
-    env.run_machine_state_controller_iteration().await;
+    run_dpu_write_with_host_lock_order_probe(
+        &env.pool,
+        mh.id,
+        mh.dpu().id,
+        env.run_machine_state_controller_iteration(),
+    )
+    .await;
 
     env.run_machine_state_controller_iteration().await;
     let dpu = mh.dpu().db_machine(&mut txn).await;
