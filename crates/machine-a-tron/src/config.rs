@@ -490,13 +490,6 @@ pub struct MachineATronConfig {
     #[serde(default = "default_false")]
     pub enable_ipmi_simulation: bool,
 
-    /// IPMI port advertised through Redfish for client connections.
-    /// - Unset/None: Use default port
-    /// - 0: Use dynamic port (same as listen port)
-    /// - 1-65535: Use this specific port
-    #[serde(default)]
-    pub ipmi_reachable_port: Option<u16>,
-
     /// Set this to configure the port to use when mocking a BMC SSH
     /// server. If unset it will pick a random port.
     #[serde(default)]
@@ -1314,11 +1307,6 @@ scout_run_interval = "5s"
     #[test]
     fn ipmi_simulation_is_disabled_by_default() {
         assert!(!rack_config().enable_ipmi_simulation);
-    }
-
-    #[test]
-    fn ipmi_reachable_port_is_unset_by_default() {
-        assert!(rack_config().ipmi_reachable_port.is_none());
     }
 
     #[test]
