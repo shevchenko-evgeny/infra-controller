@@ -3243,6 +3243,7 @@ message InstanceDpuExtensionServicesConfig {
   option (carbide.codegen.v1.message_derive) = "serde::Serialize";
   repeated InstanceDpuExtensionServiceConfig service_configs = 1;
 }
+
 // Desired nvlink configuration for an instance
 message InstanceNVLinkConfig {
   option (carbide.codegen.v1.message_derive) = "serde::Deserialize";

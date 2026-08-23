@@ -471,7 +471,7 @@ async fn test_dpf_helm_chart_create_persists_normalized_creating_state_without_d
     // or call the controller. That proves create is durable acceptance only;
     // the periodic controller scan performs the later DPF work.
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("committed DPF Helm service is controller-visible");
@@ -607,7 +607,7 @@ async fn test_dpf_helm_chart_update_replaces_v1_and_requests_reconciliation(
     );
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("updated DPF Helm service remains controller-visible");
@@ -656,7 +656,7 @@ async fn test_dpf_helm_chart_update_replaces_v1_and_requests_reconciliation(
     // DPUService material, and records the in-place revision as Active.
     env.run_extension_service_controller_iteration().await;
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("updated DPF Helm service remains controller-visible");
@@ -746,7 +746,7 @@ async fn test_dpf_helm_chart_delete_waits_for_dpf_finalization(
         }))
         .await?;
     let mut txn = env.pool.begin().await?;
-    let deleting = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let deleting = db::extension_service::find_by_ids(&mut txn, &[service_id], true, false)
         .await?
         .pop()
         .expect("soft-deleted DPF Helm service remains controller-visible");
@@ -787,7 +787,7 @@ async fn test_dpf_helm_chart_delete_waits_for_dpf_finalization(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let deleted = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let deleted = db::extension_service::find_by_ids(&mut txn, &[service_id], true, false)
         .await?
         .pop()
         .expect("terminal service record remains available");
@@ -873,7 +873,7 @@ async fn test_dpf_helm_chart_delete_refuses_unowned_dpu_service(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let service = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let service = db::extension_service::find_by_ids(&mut txn, &[service_id], true, false)
         .await?
         .pop()
         .expect("soft-deleted service remains available after an ownership conflict");
@@ -942,7 +942,7 @@ async fn test_dpf_helm_chart_delete_recovers_after_controller_restart(
     restarted.run_extension_service_controller_iteration().await;
 
     let mut txn = restarted.pool.begin().await?;
-    let service = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let service = db::extension_service::find_by_ids(&mut txn, &[service_id], true, false)
         .await?
         .pop()
         .expect("terminal service remains available");
@@ -1030,9 +1030,12 @@ async fn test_dpf_helm_chart_create_rejects_unsupported_credentials_and_observab
     for (name, credential, observability, expected_message) in [
         (
             "dpf-credential",
-            Some(create_credential()),
+            Some(rpc::DpuExtensionServiceCredential {
+                registry_url: String::new(),
+                r#type: None,
+            }),
             None,
-            "credentials for DPF Helm chart extension services are not supported yet",
+            "credentials for DPF Helm chart extension services should be preprovisioned and are not supported through API",
         ),
         (
             "dpf-observability",
@@ -1061,7 +1064,7 @@ async fn test_dpf_helm_chart_create_rejects_unsupported_credentials_and_observab
 
         let mut txn = env.pool.begin().await?;
         assert!(
-            db::extension_service::find_by_ids(&mut txn, &[service_id], false,)
+            db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
                 .await?
                 .is_empty(),
             "rejected DPF option must not leave a controller row"
@@ -1132,7 +1135,7 @@ async fn test_dpf_helm_chart_create_rejects_invalid_data(
 
         let mut txn = env.pool.begin().await?;
         assert!(
-            db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+            db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
                 .await?
                 .is_empty(),
             "invalid DPF Helm data must not leave a controller row"
@@ -1232,7 +1235,7 @@ async fn test_dpf_helm_chart_create_reconciliation_transitions_to_active(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("controller record remains available");
@@ -1290,7 +1293,7 @@ async fn test_dpf_helm_chart_create_reconciliation_accepts_owned_already_exists(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("controller record remains available");
@@ -1334,7 +1337,7 @@ async fn test_dpf_helm_chart_create_reconciliation_refuses_unowned_existing_serv
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("controller record remains available");
@@ -1365,7 +1368,7 @@ async fn test_dpf_helm_chart_create_reconciliation_retries_transient_failure(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("controller record remains available");
@@ -1401,7 +1404,7 @@ async fn test_dpf_helm_chart_controller_queue_scan_and_persistence(
     env.run_extension_service_controller_iteration().await;
 
     let mut txn = env.pool.begin().await?;
-    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let record = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("DPF Helm chart service remains visible to the controller");
@@ -1456,7 +1459,7 @@ async fn test_dpf_helm_chart_controller_queue_scan_and_persistence(
     // Exercise the IO transition/history path directly. Production code does
     // not take this transition until a later component has completed DPF work.
     let mut txn = env.pool.begin().await?;
-    let creating = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let creating = db::extension_service::find_by_ids(&mut txn, &[service_id], false, false)
         .await?
         .pop()
         .expect("controller record exists");
@@ -1497,7 +1500,7 @@ async fn test_dpf_helm_chart_controller_queue_scan_and_persistence(
     // but never receives a DPF mutation or an unintended state transition.
     env.run_extension_service_controller_iteration().await;
     let mut txn = env.pool.begin().await?;
-    let deleted = db::extension_service::find_by_ids(&mut txn, &[service_id], false)
+    let deleted = db::extension_service::find_by_ids(&mut txn, &[service_id], true, false)
         .await?
         .pop()
         .expect("terminal record remains visible");
@@ -2000,7 +2003,7 @@ async fn test_extension_service_creation_invalid_arg(
         .await;
     assert!(create_resp.is_err());
 
-    // Test invalid credential type
+    // Test invalid credential registry URL
     let extension_service = rpc::CreateDpuExtensionServiceRequest {
         service_id: None,
         service_name: "test-service".to_string(),

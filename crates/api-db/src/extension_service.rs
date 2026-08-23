@@ -298,11 +298,10 @@ pub async fn update_metadata(
 /// Atomically replaces the stable V1 desired definition of an Active DPF Helm
 /// chart service and requests asynchronous reconciliation of that replacement.
 ///
-/// Unlike Kubernetes Pod updates, this does not create V2: all instance
-/// attachments continue to reference V1 while the DPUService is patched in
-/// place by the controller. The service row lock taken by the API handler and
-/// the expected controller-state version jointly prevent a stale controller
-/// iteration from overwriting this `Updating` intent.
+/// A DPF Helm chart extension service has exactly one
+/// version, V1, for its lifetime. Unlike Kubernetes Pod updates, this replaces
+/// V1 in place and never creates V2; all instance attachments continue to
+/// reference V1 while the DPUService is patched in place by the controller.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_dpf_helm_chart_in_place(
     txn: &mut PgConnection,
@@ -573,15 +572,17 @@ pub async fn find_ids(
         .map_err(|e| DatabaseError::query(builder.sql(), e))
 }
 
-/// Loads extension-service rows by their IDs.
+/// Finds extension services by their IDs.
 ///
 /// # Parameters
 /// * `txn`        - A reference to an active DB transaction
 /// * `ids`        - A list of extension service IDs to query
+/// * `include_deleted` - Whether soft-deleted services should be included
 /// * `for_update` - Whether to lock the extension services for update
 pub async fn find_by_ids(
     txn: &mut PgConnection,
     ids: &[ExtensionServiceId],
+    include_deleted: bool,
     for_update: bool,
 ) -> DatabaseResult<Vec<ExtensionService>> {
     if ids.is_empty() {
@@ -595,6 +596,10 @@ pub async fn find_by_ids(
     );
     builder.push_bind(ids);
     builder.push(")");
+
+    if !include_deleted {
+        builder.push(" AND deleted IS NULL");
+    }
 
     if for_update {
         builder.push(" ORDER BY id ");
@@ -739,34 +744,6 @@ pub async fn find_version_info_of_known_service(
         }
         Err(e) => Err(DatabaseError::query(builder.sql(), e)),
     }
-}
-
-/// Finds an active version by its stable numeric component for a service that
-/// the caller has already established exists. This is needed for DPF Helm
-/// services, whose sole V1 has a timestamped [`ConfigVersion`] token that
-/// cannot be recreated with [`ConfigVersion::initial`].
-pub async fn find_version_info_of_known_service_by_number(
-    txn: &mut PgConnection,
-    service_id: ExtensionServiceId,
-    version_number: u64,
-) -> DatabaseResult<ExtensionServiceVersionInfo> {
-    let query = "SELECT service_id, version, data, observability, has_credential, created, deleted
-                 FROM extension_service_versions
-                 WHERE deleted IS NULL
-                   AND service_id = $1
-                   AND (split_part(split_part(version, '-', 1), 'V', 2))::bigint = $2";
-    sqlx::query_as::<_, ExtensionServiceVersionInfo>(query)
-        .bind(service_id)
-        .bind(version_number as i64)
-        .fetch_one(txn)
-        .await
-        .map_err(|error| match error {
-            sqlx::Error::RowNotFound => DatabaseError::NotFoundError {
-                kind: "extension_service_version",
-                id: format!("{service_id}/V{version_number}"),
-            },
-            error => DatabaseError::query(query, error),
-        })
 }
 
 /// Finds version infos for a given extension service, optionally filtered by version numbers.
@@ -1148,7 +1125,7 @@ mod test_batched_lookups {
         .await
         .expect("create DPF Helm chart service");
 
-        let creating = find_by_ids(&mut txn, &[service_id], false)
+        let creating = find_by_ids(&mut txn, &[service_id], false, false)
             .await
             .map(|mut services| services.pop())
             .expect("load controller record")
@@ -1215,7 +1192,14 @@ mod test_batched_lookups {
             .await
             .expect("soft delete service");
 
-        let deleted_record = find_by_ids(&mut txn, &[service_id], false)
+        assert!(
+            find_by_ids(&mut txn, &[service_id], false, false)
+                .await
+                .expect("exclude soft-deleted controller record")
+                .is_empty(),
+            "find_by_ids excludes soft-deleted services unless requested"
+        );
+        let deleted_record = find_by_ids(&mut txn, &[service_id], true, false)
             .await
             .map(|mut services| services.pop())
             .expect("load soft-deleted controller record")
@@ -1265,7 +1249,7 @@ mod test_batched_lookups {
                 let mut conn = pool.acquire().await.expect("acquire");
                 let mut names = std::collections::HashMap::new();
                 for id in ids {
-                    let service = find_by_ids(&mut conn, &[*id], false)
+                    let service = find_by_ids(&mut conn, &[*id], false, false)
                         .await
                         .expect("find_by_ids")
                         .into_iter()
@@ -1284,7 +1268,7 @@ mod test_batched_lookups {
             let ids = &ids;
             count_queries(async move {
                 let mut conn = pool.acquire().await.expect("acquire");
-                find_by_ids(&mut conn, ids, false)
+                find_by_ids(&mut conn, ids, false, false)
                     .await
                     .expect("find_by_ids")
             })

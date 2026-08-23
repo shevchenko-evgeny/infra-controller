@@ -71,7 +71,7 @@ impl StateControllerIO for ExtensionServiceStateControllerIO {
         service_id: &Self::ObjectId,
     ) -> Result<Option<Self::State>, DatabaseError> {
         Ok(
-            db::extension_service::find_by_ids(txn, &[*service_id], false)
+            db::extension_service::find_by_ids(txn, &[*service_id], true, false)
                 .await?
                 .pop()
                 .filter(|service| service.service_type == ExtensionServiceType::DpfHelmChart),

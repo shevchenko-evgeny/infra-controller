@@ -16,12 +16,6 @@
  */
 
 //! Pure projection and ownership validation for NICo-owned `DPUService` CRs.
-//!
-//! This module deliberately has no controller context and performs no DPF
-//! operation.  The controller can use its results in a later component, but
-//! keeping projection here makes the desired-object contract independently
-//! testable and prevents a live object from influencing what NICo intends to
-//! manage.
 
 use std::collections::BTreeMap;
 
@@ -33,12 +27,6 @@ use model::extension_service::{
 };
 use serde_json::{Map, Value, json};
 
-/// A projected DPUService.
-#[derive(Debug, Clone)]
-pub struct DpuServiceProjection {
-    pub service: DetachedDpuServiceDefinition,
-}
-
 /// Builds the complete, detached DPUService definition owned by one extension
 /// service. The DPF SDK alone converts this definition to the checked CR type.
 ///
@@ -49,7 +37,7 @@ pub fn project_dpu_service(
     extension_service_id: ExtensionServiceId,
     namespace: &str,
     data: &DpfHelmChartServiceData,
-) -> DpuServiceProjection {
+) -> DetachedDpuServiceDefinition {
     let identity = DpfHelmChartIdentity::from_service_id(extension_service_id);
     let service = DetachedDpuServiceDefinition {
         name: identity.dpu_service_name.clone(),
@@ -64,7 +52,7 @@ pub fn project_dpu_service(
         node_selector_labels: detached_node_selector_labels(&identity),
     };
 
-    DpuServiceProjection { service }
+    service
 }
 
 /// Returns a JSON merge patch containing only the mutable DPUService fields
@@ -287,26 +275,26 @@ mod tests {
         );
 
         assert_eq!(
-            projected.service.name,
+            projected.name,
             "extsvc-00000000-0000-0000-0000-000000000001"
         );
-        assert_eq!(projected.service.namespace, NAMESPACE);
+        assert_eq!(projected.namespace, NAMESPACE);
         assert_eq!(
-            projected.service.labels.get(DPF_HELM_CHART_OWNER_LABEL),
+            projected.labels.get(DPF_HELM_CHART_OWNER_LABEL),
             Some(&SERVICE_ID.to_owned())
         );
-        assert!(!projected.service.deploy_in_cluster);
+        assert!(!projected.deploy_in_cluster);
         assert_eq!(
-            projected.service.helm_chart.release_name,
+            projected.helm_chart.release_name,
             "extsvc-00000000-0000-0000-0000-000000000001"
         );
         assert_eq!(
-            projected.service.helm_chart.values.as_ref().unwrap()["image"],
+            projected.helm_chart.values.as_ref().unwrap()["image"],
             json!({"tag": "1.2.3", "repository": "registry.example.com/tenant/service"})
         );
-        assert!(projected.service.security_privileged);
+        assert!(projected.security_privileged);
         assert_eq!(
-            projected.service.node_selector_labels,
+            projected.node_selector_labels,
             BTreeMap::from([(
                 "nico/extsvc-00000000-0000-0000-0000-000000000001".to_owned(),
                 "enabled".to_owned(),
@@ -317,14 +305,14 @@ mod tests {
     #[test]
     fn projection_omits_absent_values_and_all_attachment_bound_fields() {
         let projected = project_dpu_service(service_id(), NAMESPACE, &data(None));
-        assert!(projected.service.helm_chart.values.is_none());
-        assert!(!projected.service.deploy_in_cluster);
+        assert!(projected.helm_chart.values.is_none());
+        assert!(!projected.deploy_in_cluster);
     }
 
     #[test]
     fn mutable_patch_has_no_identity_or_attachment_fields() {
         let projected = project_dpu_service(service_id(), NAMESPACE, &data(None));
-        let patch = dpu_service_mutable_patch(&projected.service);
+        let patch = dpu_service_mutable_patch(&projected);
 
         assert_eq!(patch["spec"]["helmChart"]["values"], Value::Null);
         assert!(patch["metadata"].is_null());
@@ -345,11 +333,11 @@ mod tests {
     fn ownership_and_immutable_contract_is_enforced_without_value_diagnostics() {
         let projected = project_dpu_service(service_id(), NAMESPACE, &data(None));
         assert_eq!(
-            verify_dpu_service_ownership(&observation(&projected.service), service_id(), NAMESPACE),
+            verify_dpu_service_ownership(&observation(&projected), service_id(), NAMESPACE),
             Ok(())
         );
 
-        let mut wrong_owner = observation(&projected.service);
+        let mut wrong_owner = observation(&projected);
         wrong_owner.labels.insert(
             DPF_HELM_CHART_OWNER_LABEL.to_owned(),
             "someone-else".to_owned(),
@@ -359,7 +347,7 @@ mod tests {
             Err(DpuServiceOwnershipConflict::OwnershipLabel)
         );
 
-        let mut wrong_release_name = observation(&projected.service);
+        let mut wrong_release_name = observation(&projected);
         wrong_release_name.helm_chart.release_name = Some("other".to_owned());
         let conflict =
             verify_dpu_service_ownership(&wrong_release_name, service_id(), NAMESPACE).unwrap_err();
@@ -392,7 +380,7 @@ mod tests {
             })
         );
 
-        let mut wrong_placement = observation(&projected.service);
+        let mut wrong_placement = observation(&projected);
         wrong_placement.service_daemon_set_node_selector = Some(json!({
             "nodeSelectorTerms": [{"matchExpressions": []}],
         }));
@@ -407,7 +395,7 @@ mod tests {
     #[test]
     fn delete_ownership_check_requires_only_the_owner_label() {
         let projected = project_dpu_service(service_id(), NAMESPACE, &data(None));
-        let mut modified_but_owned = observation(&projected.service);
+        let mut modified_but_owned = observation(&projected);
         modified_but_owned.deploy_in_cluster = Some(true);
 
         // NICo must not repair an immutable conflict, but the object is still

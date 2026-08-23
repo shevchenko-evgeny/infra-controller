@@ -1362,7 +1362,7 @@ pub(crate) async fn update_instance_config(
             )
             .unique()
             .collect_vec();
-        let services = extension_service::find_by_ids(&mut txn, &service_ids, true)
+        let services = extension_service::find_by_ids(&mut txn, &service_ids, false, true)
             .await?
             .into_iter()
             .map(|service| (service.id, service))

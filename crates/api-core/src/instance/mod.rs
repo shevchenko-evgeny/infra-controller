@@ -1865,7 +1865,7 @@ pub(crate) async fn batch_allocate_instances(
             .into_iter()
             .collect();
 
-        let services = extension_service::find_by_ids(&mut txn, &unique_service_ids, true)
+        let services = extension_service::find_by_ids(&mut txn, &unique_service_ids, false, true)
             .await?
             .into_iter()
             .map(|service| (service.id, service))

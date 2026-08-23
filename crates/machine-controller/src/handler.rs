@@ -8949,7 +8949,7 @@ async fn extension_service_types_for_instance(
         .collect_vec();
     let services = {
         let mut connection = db_pool.acquire().await?;
-        db_extension_service::find_by_ids(&mut connection, &service_ids, false).await?
+        db_extension_service::find_by_ids(&mut connection, &service_ids, false, false).await?
     };
     let service_types: HashMap<_, _> = services
         .into_iter()

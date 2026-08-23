@@ -142,18 +142,17 @@ pub(crate) async fn create(
 
     // Validate the complete service definition before writing anything.
     // Kubernetes Pod data is stored exactly as provided; DPF Helm chart data
-    // is normalized before becoming durable desired state.
+    // is parsed before becoming durable desired state.
     validate_extension_service_data_size(&req.data)?;
     let data = match &service_type {
         ExtensionServiceType::KubernetesPod => {
             validate_pod_spec_file(&req.data)?;
             req.data
         }
-        ExtensionServiceType::DpfHelmChart => normalize_dpf_helm_chart_data(&req.data)?,
+        ExtensionServiceType::DpfHelmChart => parse_dpf_helm_chart_data(&req.data)?,
     };
 
-    // Existing observability configuration is rendered by the legacy DPU
-    // agent. DPF Helm services does not have observability configuration yet.
+    // @TODO(Felicity): support observability for DpfHelmChart extension services
     if matches!(service_type, ExtensionServiceType::DpfHelmChart) && req.observability.is_some() {
         return Err(CarbideError::FailedPrecondition(
             "observability configuration for DPF Helm chart extension services is not supported yet"
@@ -174,7 +173,6 @@ pub(crate) async fn create(
             )),
         ).into());
     }
-
     let observability = req
         .observability
         .map(ExtensionServiceObservability::try_from)
@@ -292,7 +290,8 @@ pub(crate) async fn update(
     let mut txn = api.txn_begin().await?;
 
     // We lock the extension service for update so that no other request can update the service
-    let current_service_res = extension_service::find_by_ids(&mut txn, &[service_id], true).await?;
+    let current_service_res =
+        extension_service::find_by_ids(&mut txn, &[service_id], false, true).await?;
     let current_service = match current_service_res.len() {
         0 => {
             return Err(CarbideError::NotFoundError {
@@ -309,13 +308,6 @@ pub(crate) async fn update(
             .into());
         }
     };
-    if current_service.deleted.is_some() {
-        return Err(CarbideError::NotFoundError {
-            kind: "extension_service",
-            id: service_id.to_string(),
-        }
-        .into());
-    }
 
     // If the if_version_ctr_match is provided, check if the current version matches the provided version
     if let Some(version_ctr) = req.if_version_ctr_match
@@ -367,15 +359,15 @@ async fn update_dpf_helm_chart(
     txn: &mut db::Transaction<'_>,
     service_id: ExtensionServiceId,
     current_service: &ExtensionService,
-    request: &rpc::UpdateDpuExtensionServiceRequest,
+    req: &rpc::UpdateDpuExtensionServiceRequest,
 ) -> Result<(ExtensionService, ExtensionServiceVersionInfo), Status> {
-    if request.credential.is_some() {
+    if req.credential.is_some() {
         return Err(CarbideError::FailedPrecondition(
             "credentials for DPF Helm chart extension services are not supported through API, they should be preprovisioned in site".to_string(),
         )
         .into());
     }
-    if request.observability.is_some() {
+    if req.observability.is_some() {
         return Err(CarbideError::FailedPrecondition(
             "observability configuration for DPF Helm chart extension services is not supported yet"
                 .to_string(),
@@ -390,13 +382,12 @@ async fn update_dpf_helm_chart(
         .into());
     }
 
-    validate_extension_service_data_size(&request.data)?;
-    let normalized_data = normalize_dpf_helm_chart_data(&request.data)?;
+    validate_extension_service_data_size(&req.data)?;
+    let parsed_data = parse_dpf_helm_chart_data(&req.data)?;
     let existing_v1 =
-        extension_service::find_version_info_of_known_service_by_number(txn, service_id, 1).await?;
-    validate_extension_service_data_size(&existing_v1.data)?;
-    let normalized_existing = normalize_dpf_helm_chart_data(&existing_v1.data)?;
-    if normalized_data == normalized_existing {
+        extension_service::find_version_info_of_known_service(txn, service_id, None).await?;
+    let parsed_existing = parse_dpf_helm_chart_data(&existing_v1.data)?;
+    if parsed_data == parsed_existing {
         return Err(CarbideError::InvalidArgument(
             "no changes to data from the current DPF Helm chart definition".to_string(),
         )
@@ -406,9 +397,9 @@ async fn update_dpf_helm_chart(
     Ok(extension_service::update_dpf_helm_chart_in_place(
         txn,
         service_id,
-        request.service_name.as_deref(),
-        request.description.as_deref(),
-        &normalized_data,
+        req.service_name.as_deref(),
+        req.description.as_deref(),
+        &parsed_data,
         existing_v1.version,
         current_service.version_ctr,
         current_service.status.controller_state.version,
@@ -423,14 +414,14 @@ async fn update_kubernetes_pod(
     mut txn: db::Transaction<'_>,
     service_id: ExtensionServiceId,
     current_service: &ExtensionService,
-    request: rpc::UpdateDpuExtensionServiceRequest,
+    req: rpc::UpdateDpuExtensionServiceRequest,
 ) -> Result<(ExtensionService, ExtensionServiceVersionInfo), Status> {
     let latest_version = extension_service::find_version_info(&mut txn, service_id, None).await?;
     txn.commit().await?;
 
-    validate_extension_service_data_size(&request.data)?;
-    validate_pod_spec_file(&request.data)?;
-    if let Some(credential) = &request.credential {
+    validate_extension_service_data_size(&req.data)?;
+    validate_pod_spec_file(&req.data)?;
+    if let Some(credential) = &req.credential {
         validate_extension_service_credential(&current_service.service_type, credential)?;
     }
 
@@ -445,11 +436,10 @@ async fn update_kubernetes_pod(
     } else {
         None
     };
-    if !detect_extension_service_spec_change(
-        &current_service.service_type,
-        &request.data,
+    if !detect_kubernetes_pod_service_spec_change(
+        &req.data,
         &latest_version.data,
-        request.credential.clone(),
+        req.credential.clone(),
         latest_credential,
     )? {
         return Err(CarbideError::InvalidArgument(
@@ -458,30 +448,40 @@ async fn update_kubernetes_pod(
         .into());
     }
 
-    let observability_count = request
+    let obvs_len = req
         .observability
         .as_ref()
-        .map(|value| value.configs.len())
+        .map(|o| o.configs.len())
         .unwrap_or(0);
-    if observability_count > MAX_OBSERVABILITY_CONFIG_PER_SERVICE {
+    if obvs_len > MAX_OBSERVABILITY_CONFIG_PER_SERVICE {
         return Err(CarbideError::InvalidConfiguration(
-            model::ConfigValidationError::InvalidValue(format!(
-                "{observability_count} configured observability configs for extension service exceeds the limit of {MAX_OBSERVABILITY_CONFIG_PER_SERVICE}"
-            )),
-        )
-        .into());
+                model::ConfigValidationError::InvalidValue(format!(
+                    "{} configured observability configs for extension service exceeds the limit of {MAX_OBSERVABILITY_CONFIG_PER_SERVICE}",
+                    obvs_len
+                )),
+            ).into());
     }
-    let observability = request
+    let observability = req
         .observability
-        .map(model::extension_service::ExtensionServiceObservability::try_from)
+        .map(ExtensionServiceObservability::try_from)
         .transpose()?;
+
     let version_change =
         ConfigVersion::new(current_service.version_ctr.try_into().map_err(|e| {
             CarbideError::internal(format!("invalid version for extension service: {e}"))
         })?)
         .incremental_change();
 
-    let vault_credential_created = if let Some(credential) = &request.credential {
+    // Store the new credential in Vault if provided. We have to do this before updating the
+    // data in the database, so that in case this fails, the database remains untouched. We
+    // can't use db transactions for this since it can cause issues if vault is unresponsive.
+    //
+    // It does mean we have to inherit the service_type from the current service, rather than
+    // the updated one, which is ok because that is not being updated here. It also means we
+    // have to pick the new version ourselves by incrermenting the current version, but this is
+    // safe because the database will use "WHERE version_ctr = {old_version}", failing if there
+    // is a race.
+    let vault_credential_created = if let Some(credential) = &req.credential {
         create_extension_service_credential(
             &current_service.service_type,
             &api.credential_manager,
@@ -499,11 +499,11 @@ async fn update_kubernetes_pod(
             extension_service::update(
                 txn,
                 service_id,
-                request.service_name.as_deref(),
-                request.description.as_deref(),
-                &request.data,
+                req.service_name.as_deref(),
+                req.description.as_deref(),
+                &req.data,
                 observability,
-                request.credential.is_some(),
+                req.credential.is_some(),
                 version_change,
             )
             .boxed()
@@ -592,8 +592,12 @@ pub(crate) async fn delete(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Lock the extension service for delete so that no other request can update the service
-    let current_service_res = extension_service::find_by_ids(&mut txn, &[service_id], true).await?;
+    // Lock the extension service for delete so that no other request can update the service.
+    // Include a soft-deleted DPF Helm service so a retry can acknowledge an
+    // already accepted deletion while its external finalization is pending.
+    // The Kubernetes Pod deletion path still rejects soft-deleted services.
+    let current_service_res =
+        extension_service::find_by_ids(&mut txn, &[service_id], true, true).await?;
     match current_service_res.len() {
         0 => {
             return Err(CarbideError::NotFoundError {
@@ -682,12 +686,10 @@ async fn delete_dpf_helm_chart(
 
     let controller_state = service.status.controller_state.value;
     let version: ConfigVersion =
-        extension_service::find_version_info_of_known_service_by_number(txn, service_id, 1)
+        extension_service::find_version_info_of_known_service(txn, service_id, None)
             .await?
             .version;
 
-    // V1 is the sole deployable revision, regardless of whether callers
-    // omitted versions or explicitly supplied V1.
     if extension_service::is_service_in_use(txn, service_id, &[version], true).await? {
         return Err(CarbideError::FailedPrecondition(
             "extension service is in use by instances; detach before deleting".into(),
@@ -734,6 +736,7 @@ async fn delete_kubernetes_pod(
 
     let credential_versions =
         extension_service::find_versions_with_credentials(txn, service_id, versions).await?;
+
     let deleted_versions =
         extension_service::soft_delete_versions(txn, service_id, versions).await?;
 
@@ -925,7 +928,7 @@ pub(crate) async fn find_instances_by_extension_service(
 
     // Verify extension service exists
     let extension_service_res =
-        extension_service::find_by_ids(&mut txn, &[service_id], false).await?;
+        extension_service::find_by_ids(&mut txn, &[service_id], false, false).await?;
     match extension_service_res.len() {
         0 => {
             return Err(CarbideError::NotFoundError {
@@ -942,13 +945,6 @@ pub(crate) async fn find_instances_by_extension_service(
             .into());
         }
     };
-    if extension_service_res[0].deleted.is_some() {
-        return Err(CarbideError::NotFoundError {
-            kind: "extension_service",
-            id: service_id.to_string(),
-        }
-        .into());
-    }
 
     // Find instances that have this extension service (and optionally a specific version)
     // in its db extension services config
@@ -1109,7 +1105,7 @@ fn validate_pod_spec_file(data: &str) -> Result<(), CarbideError> {
 
 /// Parses and validates a DPF Helm chart definition, returning the stable JSON
 /// representation stored as the service's desired state.
-fn normalize_dpf_helm_chart_data(data: &str) -> Result<String, CarbideError> {
+fn parse_dpf_helm_chart_data(data: &str) -> Result<String, CarbideError> {
     DpfHelmChartServiceData::parse(data)
         .and_then(|definition| definition.normalized_json())
         .map_err(|error| CarbideError::InvalidArgument(error.to_string()))
@@ -1132,6 +1128,28 @@ fn validate_extension_service_credential(
     service_type: &ExtensionServiceType,
     credential: &rpc::DpuExtensionServiceCredential,
 ) -> Result<(), CarbideError> {
+    match service_type {
+        ExtensionServiceType::KubernetesPod => {
+            // Validate registry URL, this will be fed into the credential provider as
+            // image match pattern. For example, if the registry URL is "nvcr.io/nvforge",
+            // kubelet will match all images under "nvcr.io/nvforge/*".
+            if credential.registry_url.is_empty() || credential.registry_url.len() > 255 {
+                return Err(CarbideError::InvalidArgument(
+                    "invalid credential registry URL".to_string(),
+                ));
+            }
+        }
+
+        // DPF Helm credentials need a DPF-native secret/ownership contract;
+        // do not send the legacy DPU-agent credential representation to DPF.
+        ExtensionServiceType::DpfHelmChart => {
+            return Err(CarbideError::FailedPrecondition(
+                "credentials for DPF Helm chart extension services should be preprovisioned and are not supported through API"
+                    .to_string(),
+            ));
+        }
+    }
+
     match credential.r#type.as_ref() {
         Some(rpc::dpu_extension_service_credential::Type::UsernamePassword(up)) => {
             // @TODO(Felicity): Add more validation for username and password
@@ -1153,63 +1171,29 @@ fn validate_extension_service_credential(
         }
     };
 
-    match service_type {
-        ExtensionServiceType::KubernetesPod => {
-            // Validate registry URL, this will be fed into the credential provider as
-            // image match pattern. For example, if the registry URL is "nvcr.io/nvforge",
-            // kubelet will match all images under "nvcr.io/nvforge/*".
-            if credential.registry_url.is_empty() || credential.registry_url.len() > 255 {
-                return Err(CarbideError::InvalidArgument(
-                    "invalid credential registry URL".to_string(),
-                ));
-            }
-        }
-
-        // DPF Helm credentials need a DPF-native secret/ownership contract;
-        // do not send the legacy DPU-agent credential representation to DPF.
-        ExtensionServiceType::DpfHelmChart => {
-            return Err(CarbideError::FailedPrecondition(
-                "credentials for DPF Helm chart extension services are not supported yet"
-                    .to_string(),
-            ));
-        }
-    }
-
     Ok(())
 }
 
 /// Return true/false based on if there are any changes between old and new extension service specifications.
-fn detect_extension_service_spec_change(
-    service_type: &ExtensionServiceType,
+fn detect_kubernetes_pod_service_spec_change(
     new_data: &str,
     old_data: &str,
     new_cred: Option<rpc::DpuExtensionServiceCredential>,
     old_cred: Option<rpc::DpuExtensionServiceCredential>,
 ) -> Result<bool, CarbideError> {
-    let data_changed = match service_type {
-        ExtensionServiceType::KubernetesPod => {
-            let old_data_yaml =
-                serde_yaml::from_str::<serde_yaml::Value>(old_data).map_err(|e| {
-                    CarbideError::internal(format!(
-                        "found corrupted data for KubernetesPod service: {}",
-                        e
-                    ))
-                })?;
-            let new_data_yaml =
-                serde_yaml::from_str::<serde_yaml::Value>(new_data).map_err(|e| {
-                    CarbideError::InvalidArgument(format!(
-                        "invalid pod spec file for KubernetesPod service: {}",
-                        e
-                    ))
-                })?;
-            old_data_yaml != new_data_yaml
-        }
-        ExtensionServiceType::DpfHelmChart => {
-            return Err(CarbideError::FailedPrecondition(
-                "DPF Helm chart extension services are not enabled yet".to_string(),
-            ));
-        }
-    };
+    let old_data_yaml = serde_yaml::from_str::<serde_yaml::Value>(old_data).map_err(|e| {
+        CarbideError::internal(format!(
+            "found corrupted data for KubernetesPod service: {}",
+            e
+        ))
+    })?;
+    let new_data_yaml = serde_yaml::from_str::<serde_yaml::Value>(new_data).map_err(|e| {
+        CarbideError::InvalidArgument(format!(
+            "invalid pod spec file for KubernetesPod service: {}",
+            e
+        ))
+    })?;
+    let data_changed = old_data_yaml != new_data_yaml;
 
     let cred_changed = match (old_cred.as_ref(), new_cred.as_ref()) {
         (None, None) => false,

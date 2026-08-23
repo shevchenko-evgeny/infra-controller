@@ -609,7 +609,8 @@ async fn get_managed_host_network_config_inner(
             .map(|config| config.service_id)
             .unique()
             .collect_vec();
-        let services_by_id = db::extension_service::find_by_ids(&mut txn, &service_ids, false)
+        let services_by_id =
+            db::extension_service::find_by_ids(&mut txn, &service_ids, false, false)
             .await?
             .into_iter()
             .map(|service| (service.id, service))

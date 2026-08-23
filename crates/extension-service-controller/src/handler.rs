@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Lifecycle reconciliation for DPF Helm chart extension services.
+//! State Handler implementation for Extension Services
 
 use carbide_dpf::DpfError;
 use carbide_machine_controller::dpf::DpfOperations;
@@ -72,10 +72,10 @@ async fn reconcile_create(
 ) -> Result<StateHandlerOutcome<ExtensionServiceLifecycleState>, StateHandlerError> {
     let version = {
         let mut connection = ctx.services.db_pool.acquire().await?;
-        db::extension_service::find_version_info_of_known_service_by_number(
+        db::extension_service::find_version_info_of_known_service(
             &mut *connection,
             service_id,
-            1,
+            None,
         )
         .await?
     };
@@ -89,7 +89,7 @@ async fn reconcile_create(
             ));
         }
     };
-    let projection = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
+    let service = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
 
     let Some(dpf_sdk) = ctx.services.dpf_sdk.as_ref() else {
         return Ok(StateHandlerOutcome::wait(
@@ -97,7 +97,7 @@ async fn reconcile_create(
         ));
     };
 
-    match dpf_sdk.create_dpu_service(&projection.service).await {
+    match dpf_sdk.create_dpu_service(&service).await {
         Ok(created) => {
             match verify_dpu_service_ownership(&created, service_id, carbide_dpf::NAMESPACE) {
                 Ok(()) => Ok(StateHandlerOutcome::transition(
@@ -176,10 +176,10 @@ async fn reconcile_update(
 ) -> Result<StateHandlerOutcome<ExtensionServiceLifecycleState>, StateHandlerError> {
     let version = {
         let mut connection = ctx.services.db_pool.acquire().await?;
-        db::extension_service::find_version_info_of_known_service_by_number(
+        db::extension_service::find_version_info_of_known_service(
             &mut *connection,
             service_id,
-            1,
+            None,
         )
         .await?
     };
@@ -193,7 +193,7 @@ async fn reconcile_update(
             ));
         }
     };
-    let projection = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
+    let service = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
 
     let Some(dpf_sdk) = ctx.services.dpf_sdk.as_ref() else {
         return Ok(StateHandlerOutcome::wait(
@@ -201,7 +201,7 @@ async fn reconcile_update(
         ));
     };
 
-    let existing = match dpf_sdk.get_dpu_service(&projection.service.name).await {
+    let existing = match dpf_sdk.get_dpu_service(&service.name).await {
         Ok(Some(existing)) => existing,
         // An Active service must already have a detached DPUService. Treat a
         // missing object as an ownership/lifecycle conflict rather than
@@ -239,8 +239,8 @@ async fn reconcile_update(
 
     match dpf_sdk
         .patch_dpu_service(
-            &projection.service.name,
-            dpu_service_mutable_patch(&projection.service),
+            &service.name,
+            dpu_service_mutable_patch(&service),
         )
         .await
     {
