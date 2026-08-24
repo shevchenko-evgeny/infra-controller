@@ -452,7 +452,7 @@ func TestGetRackTasksHandler_Handle(t *testing.T) {
 			reqOrg:         org,
 			user:           providerUser,
 			pathParam:      rackID,
-			queryParams:    map[string]string{"siteId": site.ID.String(), "activeOnly": "true"},
+			queryParams:    map[string]string{"siteId": site.ID.String(), "activeOnly": "true", "pageNumber": "2", "pageSize": "10"},
 			mockTasks:      listed,
 			expectedStatus: http.StatusOK,
 			assertFlowReq: func(t *testing.T, req *flowv1.ListTasksRequest, pathParam string) {
@@ -460,6 +460,9 @@ func TestGetRackTasksHandler_Handle(t *testing.T) {
 				require.NotNil(t, req.GetRackId())
 				assert.Equal(t, pathParam, req.GetRackId().GetId())
 				assert.True(t, req.GetActiveOnly())
+				require.NotNil(t, req.GetPagination())
+				assert.Equal(t, int32(10), req.GetPagination().GetOffset())
+				assert.Equal(t, int32(10), req.GetPagination().GetLimit())
 			},
 		},
 		{
@@ -521,7 +524,7 @@ func TestGetTrayTasksHandler_Handle(t *testing.T) {
 			reqOrg:         org,
 			user:           providerUser,
 			pathParam:      trayID,
-			queryParams:    map[string]string{"siteId": site.ID.String()},
+			queryParams:    map[string]string{"siteId": site.ID.String(), "pageSize": "5"},
 			mockTasks:      listed,
 			expectedStatus: http.StatusOK,
 			assertFlowReq: func(t *testing.T, req *flowv1.ListTasksRequest, pathParam string) {
@@ -529,6 +532,9 @@ func TestGetTrayTasksHandler_Handle(t *testing.T) {
 				require.NotNil(t, req.GetComponentId())
 				assert.Equal(t, pathParam, req.GetComponentId().GetId())
 				assert.Nil(t, req.GetRackId())
+				require.NotNil(t, req.GetPagination())
+				assert.Equal(t, int32(0), req.GetPagination().GetOffset())
+				assert.Equal(t, int32(5), req.GetPagination().GetLimit())
 			},
 		},
 		{

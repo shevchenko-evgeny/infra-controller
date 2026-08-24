@@ -361,7 +361,7 @@ func (h GetAllTasksHandler) Handle(c echo.Context) error {
 	}
 
 	var apiRequest model.APIGetTasksRequest
-	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest); err != nil {
+	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest, pagination.PageRequest{}); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}
 	if err := c.Bind(&apiRequest); err != nil {
@@ -530,7 +530,7 @@ func (h GetRackTasksHandler) Handle(c echo.Context) error {
 	}
 
 	var apiRequest model.APIGetTasksRequest
-	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest); err != nil {
+	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest, pagination.PageRequest{}); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}
 	if err := c.Bind(&apiRequest); err != nil {
@@ -699,7 +699,7 @@ func (h GetTrayTasksHandler) Handle(c echo.Context) error {
 	}
 
 	var apiRequest model.APIGetTasksRequest
-	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest); err != nil {
+	if err := common.ValidateKnownQueryParams(c.QueryParams(), apiRequest, pagination.PageRequest{}); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}
 	if err := c.Bind(&apiRequest); err != nil {
