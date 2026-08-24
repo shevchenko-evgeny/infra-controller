@@ -659,13 +659,6 @@ async fn get_managed_host_network_config_inner(
             if service.service_type == ExtensionServiceType::DpfHelmChart {
                 continue;
             }
-            if service.deleted.is_some() {
-                return Err(CarbideError::NotFoundError {
-                    kind: "ExtensionService",
-                    id: config.service_id.to_string(),
-                }
-                .into());
-            }
 
             // The pinned version is looked up individually so the exact
             // `version == config.version` selection (and its full data/credential/observability

@@ -984,8 +984,10 @@ pub async fn update_network_status_observation(
 /// is a single JSONB update: PostgreSQL serializes concurrent row updates and
 /// `jsonb_set` retains every other service-type entry.
 ///
-/// Returns `false` when a newer observation for this same service type is
-/// already present.
+/// Returns `false` when the machine exists but a newer observation for this
+/// same service type is already present, and [`DatabaseError::NotFoundError`]
+/// when the machine row is absent, so a superseded report is distinguishable
+/// from a machine that went away.
 pub async fn update_extension_service_status_observation(
     txn: &mut PgConnection,
     machine_id: &MachineId,
@@ -1013,10 +1015,39 @@ pub async fn update_extension_service_status_observation(
         .bind(service_type.to_string())
         .bind(sqlx::types::Json(observation))
         .bind(observation.observed_at)
-        .fetch_optional(txn)
+        .fetch_optional(&mut *txn)
         .await
         .map_err(|e| DatabaseError::query(query, e))?;
-    Ok(updated.is_some())
+    if updated.is_some() {
+        return Ok(true);
+    }
+
+    // The update above matches on machine identity and observation freshness
+    // together, so re-check identity alone to attribute the miss to one or the
+    // other.
+    let identity_query = "SELECT id FROM machines WHERE id = $1";
+    let machine_exists: Option<(MachineId,)> = sqlx::query_as(identity_query)
+        .bind(machine_id)
+        .fetch_optional(&mut *txn)
+        .await
+        .map_err(|e| DatabaseError::query(identity_query, e))?;
+    if machine_exists.is_some() {
+        return Ok(false);
+    }
+
+    // Captures why the update failed in unit tests even though all prerequisite
+    // data appears present. Compiles to a no-op in production environments.
+    debug_failed_machine_status_update(
+        txn,
+        machine_id,
+        "extension_service_status_observations",
+        observation,
+    )
+    .await;
+    Err(DatabaseError::NotFoundError {
+        kind: "machine",
+        id: machine_id.to_string(),
+    })
 }
 
 /// Only does the update if the passed observation is newer than any existing one

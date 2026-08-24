@@ -397,7 +397,7 @@ async fn update_dpf_helm_chart(
         .status
         .controller_state
         .version
-        .increment_change();
+        .incremental_change();
 
     Ok(extension_service::update_dpf_helm_chart_in_place(
         txn,

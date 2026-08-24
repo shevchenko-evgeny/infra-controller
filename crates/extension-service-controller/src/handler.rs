@@ -360,9 +360,9 @@ fn is_not_found(error: &DpfError) -> bool {
         || matches!(error, DpfError::KubeError(kube::Error::Api(status)) if status.is_not_found())
 }
 
-/// Bad request, authentication/authorization, and unprocessable-object
-/// failures cannot be repaired by replaying an unchanged desired state.
+/// Bad request and unprocessable-object failures cannot be repaired by
+/// replaying an unchanged desired state, so they end the lifecycle.
 fn is_permanent_dpf_error(error: &DpfError) -> bool {
     matches!(error, DpfError::ConfigError(_))
-        || matches!(error, DpfError::KubeError(kube::Error::Api(status)) if matches!(status.code, 400 | 401 | 403 | 422))
+        || matches!(error, DpfError::KubeError(kube::Error::Api(status)) if matches!(status.code, 400 | 422))
 }
