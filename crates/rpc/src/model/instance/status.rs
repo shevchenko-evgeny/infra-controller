@@ -133,6 +133,7 @@ pub fn instance_status_from_config_and_observation(
         model::instance::status::extension_service::is_extension_services_ready(
             &extension_services,
         );
+
     let nvlink = model::instance::status::nvlink::InstanceNvLinkStatus::from_config_and_observation(
         nvlink_config,
         nvlink_status,

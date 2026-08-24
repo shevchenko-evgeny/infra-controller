@@ -434,7 +434,7 @@ pub struct InstanceExtensionServiceStatusObservation {
 /// adding another observation shape or column.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceExtensionServiceStatusObservationByType {
-    #[serde(default)]
+    #[serde(default, flatten)]
     pub by_service_type: BTreeMap<String, InstanceExtensionServiceStatusObservation>,
 }
 
@@ -685,6 +685,26 @@ mod tests {
             status.extension_services[0].overall_status,
             ExtensionServiceDeploymentStatus::Running
         );
+    }
+
+    #[test]
+    fn type_keyed_observation_uses_the_database_json_shape() {
+        let observation = create_observation(
+            ConfigVersion::initial(),
+            ConfigVersion::initial(),
+            ExtensionServiceDeploymentStatus::Running,
+        );
+        let mut typed_observations = InstanceExtensionServiceStatusObservationByType::default();
+        typed_observations
+            .set_for_service_type(ExtensionServiceType::KubernetesPod, observation.clone());
+
+        let serialized = serde_json::to_value(&typed_observations).unwrap();
+        assert_eq!(serialized["kubernetes_pod"], serde_json::json!(observation));
+        assert!(serialized.get("by_service_type").is_none());
+
+        let deserialized: InstanceExtensionServiceStatusObservationByType =
+            serde_json::from_value(serialized).unwrap();
+        assert_eq!(deserialized, typed_observations);
     }
 
     #[test]

@@ -17,13 +17,14 @@
 ALTER TABLE machines
     ADD COLUMN extension_service_status_observations jsonb NOT NULL DEFAULT '{}'::jsonb;
 
--- Preserve the latest KubernetesPod observation already embedded in the
--- agent-owned network-status document. New reports write this canonical source
--- entry directly, but the backfill avoids a temporary Unknown state for
--- existing instances during rollout.
+-- Backfill the latest KubernetesPod observation from the agent-owned
+-- network-status document. New reports write this column directly; the
+-- backfill prevents existing instances from transiently reporting Unknown
+-- during rollout.
 UPDATE machines
 SET extension_service_status_observations = jsonb_build_object(
     'kubernetes_pod',
     network_status_observation->'extension_service_observation'
 )
-WHERE network_status_observation->'extension_service_observation' IS NOT NULL;
+WHERE jsonb_typeof(network_status_observation->'extension_service_observation') = 'object'
+  AND network_status_observation->'extension_service_observation'->>'observed_at' IS NOT NULL;
