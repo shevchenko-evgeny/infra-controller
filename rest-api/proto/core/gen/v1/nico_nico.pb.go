@@ -4046,16 +4046,19 @@ func (TrimTableTarget) EnumDescriptor() ([]byte, []int) {
 type DpuExtensionServiceType int32
 
 const (
-	DpuExtensionServiceType_KUBERNETES_POD DpuExtensionServiceType = 0 // Add supported service types in the future
+	DpuExtensionServiceType_KUBERNETES_POD DpuExtensionServiceType = 0
+	DpuExtensionServiceType_DPF_HELM_CHART DpuExtensionServiceType = 1
 )
 
 // Enum value maps for DpuExtensionServiceType.
 var (
 	DpuExtensionServiceType_name = map[int32]string{
 		0: "KUBERNETES_POD",
+		1: "DPF_HELM_CHART",
 	}
 	DpuExtensionServiceType_value = map[string]int32{
 		"KUBERNETES_POD": 0,
+		"DPF_HELM_CHART": 1,
 	}
 )
 
@@ -69968,9 +69971,10 @@ const file_nico_nico_proto_rawDesc = "" +
 	" HOST_FIRMWARE_COMPONENT_TYPE_CX7\x10\n" +
 	"*#\n" +
 	"\x0fTrimTableTarget\x12\x10\n" +
-	"\fMeasuredBoot\x10\x00*-\n" +
+	"\fMeasuredBoot\x10\x00*A\n" +
 	"\x17DpuExtensionServiceType\x12\x12\n" +
-	"\x0eKUBERNETES_POD\x10\x00*\x9e\x02\n" +
+	"\x0eKUBERNETES_POD\x10\x00\x12\x12\n" +
+	"\x0eDPF_HELM_CHART\x10\x01*\x9e\x02\n" +
 	"#DpuExtensionServiceDeploymentStatus\x12!\n" +
 	"\x1dDPU_EXTENSION_SERVICE_UNKNOWN\x10\x00\x12!\n" +
 	"\x1dDPU_EXTENSION_SERVICE_PENDING\x10\x01\x12!\n" +

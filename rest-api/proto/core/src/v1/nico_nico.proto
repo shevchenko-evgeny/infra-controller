@@ -3139,6 +3139,7 @@ message InstanceDpuExtensionServiceConfig {
 message InstanceDpuExtensionServicesConfig {
   repeated InstanceDpuExtensionServiceConfig service_configs = 1;
 }
+
 // Desired nvlink configuration for an instance
 message InstanceNVLinkConfig {
   // Configures how instance nvlink gpus are set up
@@ -8637,7 +8638,7 @@ message SetPrimaryInterfaceRequest {
 // DPU Extension Service Types and Messages
 enum DpuExtensionServiceType {
   KUBERNETES_POD = 0;
-  // Add supported service types in the future
+  DPF_HELM_CHART = 1;
 }
 
 message UsernamePassword {
