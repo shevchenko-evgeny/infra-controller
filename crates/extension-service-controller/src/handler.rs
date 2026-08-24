@@ -72,12 +72,8 @@ async fn reconcile_create(
 ) -> Result<StateHandlerOutcome<ExtensionServiceLifecycleState>, StateHandlerError> {
     let version = {
         let mut connection = ctx.services.db_pool.acquire().await?;
-        db::extension_service::find_version_info_of_known_service(
-            &mut *connection,
-            service_id,
-            None,
-        )
-        .await?
+        db::extension_service::find_version_info_of_known_service(&mut connection, service_id, None)
+            .await?
     };
     let data = match DpfHelmChartServiceData::parse(&version.data) {
         Ok(data) => data,
@@ -176,12 +172,8 @@ async fn reconcile_update(
 ) -> Result<StateHandlerOutcome<ExtensionServiceLifecycleState>, StateHandlerError> {
     let version = {
         let mut connection = ctx.services.db_pool.acquire().await?;
-        db::extension_service::find_version_info_of_known_service(
-            &mut *connection,
-            service_id,
-            None,
-        )
-        .await?
+        db::extension_service::find_version_info_of_known_service(&mut connection, service_id, None)
+            .await?
     };
     let data = match DpfHelmChartServiceData::parse(&version.data) {
         Ok(data) => data,

@@ -224,7 +224,7 @@ impl TryFrom<&rpc::DpuNetworkStatus> for InstanceExtensionServiceStatusObservati
                 })
             })
             .transpose()?;
-        let observed_at = match observation.observed_at.clone() {
+        let observed_at = match observation.observed_at {
             Some(timestamp) => DateTime::from(
                 SystemTime::try_from(timestamp)
                     .map_err(|_| RpcDataConversionError::InvalidTimestamp(timestamp.to_string()))?,

@@ -311,9 +311,12 @@ pub async fn update_dpf_helm_chart_in_place(
     normalized_data: &str,
     stable_version: ConfigVersion,
     expected_version_ctr: i32,
-    expected_controller_state_version: ConfigVersion,
+    controller_state_version_change: ConfigVersionChange,
 ) -> Result<(ExtensionService, ExtensionServiceVersionInfo), DatabaseError> {
-    let next_controller_state_version = expected_controller_state_version.increment();
+    let ConfigVersionChange {
+        current: expected_controller_state_version,
+        new: next_controller_state_version,
+    } = controller_state_version_change;
     let mut builder = sqlx::QueryBuilder::new(
         "UPDATE extension_services SET updated = CURRENT_TIMESTAMP, version_ctr = version_ctr + 1, ",
     );
@@ -1033,8 +1036,7 @@ mod test_batched_lookups {
     use carbide_test_support::query_counter::count_queries;
     use config_version::ConfigVersion;
     use model::controller_outcome::PersistentStateHandlerOutcome;
-    use model::extension_service::ExtensionServiceLifecycleState;
-    use model::extension_service::ExtensionServiceType;
+    use model::extension_service::{ExtensionServiceLifecycleState, ExtensionServiceType};
     use model::metadata::Metadata;
     use model::tenant::TenantOrganizationId;
 

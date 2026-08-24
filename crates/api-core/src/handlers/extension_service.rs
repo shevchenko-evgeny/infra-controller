@@ -340,12 +340,12 @@ pub(crate) async fn update(
         match &current_service.service_type {
             ExtensionServiceType::DpfHelmChart => {
                 let result =
-                    update_dpf_helm_chart(&mut txn, service_id, &current_service, &req).await?;
+                    update_dpf_helm_chart(&mut txn, service_id, current_service, &req).await?;
                 txn.commit().await?;
                 result
             }
             ExtensionServiceType::KubernetesPod => {
-                update_kubernetes_pod(api, txn, service_id, &current_service, req).await?
+                update_kubernetes_pod(api, txn, service_id, current_service, req).await?
             }
         }
     };
@@ -393,6 +393,11 @@ async fn update_dpf_helm_chart(
         )
         .into());
     }
+    let controller_state_version_change = current_service
+        .status
+        .controller_state
+        .version
+        .increment_change();
 
     Ok(extension_service::update_dpf_helm_chart_in_place(
         txn,
@@ -402,7 +407,7 @@ async fn update_dpf_helm_chart(
         &parsed_data,
         existing_v1.version,
         current_service.version_ctr,
-        current_service.status.controller_state.version,
+        controller_state_version_change,
     )
     .await?)
 }

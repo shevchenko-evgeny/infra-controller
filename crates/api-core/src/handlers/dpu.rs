@@ -613,10 +613,10 @@ async fn get_managed_host_network_config_inner(
             .collect_vec();
         let services_by_id =
             db::extension_service::find_by_ids(&mut txn, &service_ids, false, false)
-            .await?
-            .into_iter()
-            .map(|service| (service.id, service))
-            .collect::<HashMap<_, _>>();
+                .await?
+                .into_iter()
+                .map(|service| (service.id, service))
+                .collect::<HashMap<_, _>>();
 
         // The nested Instance is also consumed by the agent. Keep its
         // extension-service view aligned with the dedicated agent payload so
@@ -1464,11 +1464,7 @@ pub(crate) async fn trigger_dpu_reprovisioning(
 
     match req.mode() {
         Mode::Set => {
-            reject_dpf_migration_that_would_strand_extension_services(
-                api,
-                &snapshot,
-                &machine_id,
-            )?;
+            reject_dpf_migration_that_would_strand_extension_services(api, &snapshot, &machine_id)?;
 
             let initiator = req.initiator().as_str_name();
             if machine_id.machine_type().is_dpu() {

@@ -39,7 +39,7 @@ pub fn project_dpu_service(
     data: &DpfHelmChartServiceData,
 ) -> DetachedDpuServiceDefinition {
     let identity = DpfHelmChartIdentity::from_service_id(extension_service_id);
-    let service = DetachedDpuServiceDefinition {
+    DetachedDpuServiceDefinition {
         name: identity.dpu_service_name.clone(),
         namespace: namespace.to_owned(),
         labels: BTreeMap::from([(
@@ -50,9 +50,7 @@ pub fn project_dpu_service(
         deploy_in_cluster: false,
         security_privileged: data.security_privileged,
         node_selector_labels: detached_node_selector_labels(&identity),
-    };
-
-    service
+    }
 }
 
 /// Returns a JSON merge patch containing only the mutable DPUService fields

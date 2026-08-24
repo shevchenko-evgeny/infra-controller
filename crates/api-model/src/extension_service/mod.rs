@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-use crate::controller_outcome::PersistentStateHandlerOutcome;
 use carbide_uuid::extension_service::ExtensionServiceId;
 use chrono::prelude::*;
 use config_version::{ConfigVersion, Versioned};
@@ -24,6 +23,7 @@ use sqlx::postgres::PgRow;
 use sqlx::{FromRow, Row};
 
 use super::tenant::TenantOrganizationId;
+use crate::controller_outcome::PersistentStateHandlerOutcome;
 
 /// The prefix used for the stable DPF resource and Helm release owned by an
 /// extension service.

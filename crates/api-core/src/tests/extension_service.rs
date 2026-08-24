@@ -452,9 +452,10 @@ async fn test_dpf_helm_chart_create_persists_normalized_creating_state_without_d
         .latest_version_info
         .as_ref()
         .expect("initial version is returned");
-    assert_eq!(response.active_versions, vec![
-        latest_version.version.clone()
-    ]);
+    assert_eq!(
+        response.active_versions,
+        vec![latest_version.version.clone()]
+    );
     assert_eq!(
         latest_version
             .version
@@ -589,9 +590,10 @@ async fn test_dpf_helm_chart_update_replaces_v1_and_requests_reconciliation(
         .latest_version_info
         .as_ref()
         .expect("stable V1 is returned");
-    assert_eq!(updated.active_versions, vec![
-        latest_version.version.clone()
-    ]);
+    assert_eq!(
+        updated.active_versions,
+        vec![latest_version.version.clone()]
+    );
     assert_eq!(
         latest_version
             .version
@@ -1635,10 +1637,10 @@ async fn test_extension_service_create_failure(db_pool: sqlx::PgPool) -> Result<
         "creating a second identical extension service should have failed"
     );
     assert_eq!(
-        metrics.counter_delta(CREDENTIAL_CLEANUP_FAILURE_METRIC, &[(
-            "operation",
-            "create"
-        )],),
+        metrics.counter_delta(
+            CREDENTIAL_CLEANUP_FAILURE_METRIC,
+            &[("operation", "create")],
+        ),
         1.0,
     );
 
@@ -1840,10 +1842,10 @@ async fn test_extension_service_update_failure(db_pool: sqlx::PgPool) -> Result<
         "update_dpu_extension_service should have failed, got: {update_response:?}"
     );
     assert_eq!(
-        metrics.counter_delta(CREDENTIAL_CLEANUP_FAILURE_METRIC, &[(
-            "operation",
-            "update"
-        )],),
+        metrics.counter_delta(
+            CREDENTIAL_CLEANUP_FAILURE_METRIC,
+            &[("operation", "update")],
+        ),
         1.0,
     );
 
@@ -3248,10 +3250,10 @@ async fn test_extension_service_delete_credential_cleanup_failure(
 
     assert!(delete_response.is_ok());
     assert_eq!(
-        metrics.counter_delta(CREDENTIAL_CLEANUP_FAILURE_METRIC, &[(
-            "operation",
-            "delete"
-        )],),
+        metrics.counter_delta(
+            CREDENTIAL_CLEANUP_FAILURE_METRIC,
+            &[("operation", "delete")],
+        ),
         2.0,
     );
 
