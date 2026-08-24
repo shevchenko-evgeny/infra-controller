@@ -28,9 +28,7 @@ use carbide_uuid::instance::InstanceId;
 use carbide_uuid::machine::MachineId;
 use carbide_uuid::network::NetworkSegmentId;
 use carbide_uuid::vpc::{VpcId, VpcPrefixId};
-use db::{
-    DatabaseError, ObjectColumnFilter, WithTransaction, extension_service, network_security_group,
-};
+use db::{DatabaseError, ObjectColumnFilter, WithTransaction, network_security_group};
 use futures_util::FutureExt;
 use health_report::{
     HealthAlertClassification, HealthProbeAlert, HealthProbeId, HealthReport, HealthReportApplyMode,
@@ -38,7 +36,6 @@ use health_report::{
 use itertools::Itertools as _;
 use model::ConfigValidationError;
 use model::dpa_interface::DpaSearchConfig;
-use model::extension_service::ExtensionService;
 use model::instance::config::InstanceConfig;
 use model::instance::config::extension_services::InstanceExtensionServicesConfig;
 use model::instance::config::infiniband::InstanceInfinibandConfig;
@@ -67,10 +64,9 @@ use crate::ethernet_virtualization::validate_instance_interface_routing_profiles
 use crate::handlers::utils::convert_and_log_machine_id;
 use crate::instance::{
     InstanceAllocationRequest, allocate_ib_port_guid, allocate_instance, allocate_network,
-    allocate_spx_port_mac, validate_ib_partition_ownership,
-    validate_instance_extension_service_host_compatibility, validate_instance_extension_services,
-    validate_instance_vfs_against_dpf_topology, validate_os_definition_usable,
-    validate_spx_partition_ownership,
+    allocate_spx_port_mac, load_extension_services, validate_ib_partition_ownership,
+    validate_instance_extension_services, validate_instance_vfs_against_dpf_topology,
+    validate_os_definition_usable, validate_spx_partition_ownership,
 };
 use crate::{CarbideError, CarbideResult};
 
@@ -1339,61 +1335,13 @@ pub(crate) async fn update_instance_config(
         }
     }
 
-    // Validate extension-service attachment versions while holding the service
-    // and version row locks. DPF Helm and Kubernetes Pod services both carry
-    // their concrete active version in the API and durable configuration.
-    if instance
-        .config
-        .extension_services
-        .is_extension_services_config_update_requested(&config.extension_services)
-    {
-        let service_ids = config
-            .extension_services
-            .service_configs
-            .iter()
-            .map(|service| service.service_id)
-            .chain(
-                instance
-                    .config
-                    .extension_services
-                    .service_configs
-                    .iter()
-                    .map(|service| service.service_id),
-            )
-            .unique()
-            .collect_vec();
-        let services = extension_service::find_by_ids(&mut txn, &service_ids, false, true)
-            .await?
-            .into_iter()
-            .map(|service| (service.id, service))
-            .collect();
-        let versions =
-            extension_service::find_versions_by_service_ids(&mut txn, &service_ids, true).await?;
-        let existing_active_service_ids = instance
-            .config
-            .extension_services
-            .active_services()
-            .into_iter()
-            .map(|service| service.service_id)
-            .collect();
-
-        validate_instance_extension_services(
-            &config.extension_services,
-            &services,
-            &versions,
-            api.runtime_config.dpf.enabled,
-            &existing_active_service_ids,
-        )?;
-
-        update_instance_extension_services_config(
-            &mh_snapshot,
-            &instance,
-            &mut config.extension_services,
-            &services,
-            &mut txn,
-        )
-        .await?;
-    }
+    update_instance_extension_services_config(
+        &mh_snapshot,
+        &instance,
+        &config.extension_services,
+        &mut txn,
+    )
+    .await?;
 
     update_instance_network_config(
         &api.runtime_config,
@@ -1777,21 +1725,21 @@ async fn update_instance_infiniband_config(
     Ok(())
 }
 
+/// Applies a requested extension-service attachment change.
+///
+/// `extension_services` is the caller-visible view: the services the instance
+/// should be running. It is merged with the durable config, which additionally
+/// carries attachments that are still terminating, and the merged result is
+/// what gets validated and persisted.
 async fn update_instance_extension_services_config(
     mh_snapshot: &ManagedHostStateSnapshot,
     instance: &InstanceSnapshot,
-    extension_services: &mut InstanceExtensionServicesConfig,
-    services: &std::collections::HashMap<
-        carbide_uuid::extension_service::ExtensionServiceId,
-        ExtensionService,
-    >,
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    extension_services: &InstanceExtensionServicesConfig,
+    txn: &mut db::Transaction<'_>,
 ) -> Result<(), CarbideError> {
-    if !instance
-        .config
-        .extension_services
-        .is_extension_services_config_update_requested(extension_services)
-    {
+    let current = &instance.config.extension_services;
+
+    if !current.is_extension_services_config_update_requested(extension_services) {
         return Ok(());
     }
 
@@ -1808,24 +1756,35 @@ async fn update_instance_extension_services_config(
         return Err(ConfigValidationError::InstanceDeletionIsRequested.into());
     }
 
-    // Calculate the new extension services config.
-    let new_extension_services_config = instance
-        .config
-        .extension_services
-        .calculate_new_extension_services_config(extension_services);
-
     // A service being detached remains durably represented with `removed:
-    // true`. Include those entries in the compatibility check so an instance
-    // cannot switch between the agent and DPF delivery paths while either
-    // path still has cleanup in flight.
-    validate_instance_extension_service_host_compatibility(
+    // true`, so the merged config references every service the instance is
+    // attached to before and after this update.
+    let new_extension_services_config =
+        current.calculate_new_extension_services_config(extension_services);
+    let service_ids = new_extension_services_config
+        .service_configs
+        .iter()
+        .map(|service| service.service_id)
+        .unique()
+        .collect_vec();
+
+    // Resolve the services while holding the service and version row locks.
+    let (services, versions) = load_extension_services(txn, &service_ids).await?;
+    let existing_active_service_ids = current
+        .active_services()
+        .into_iter()
+        .map(|service| service.service_id)
+        .collect();
+
+    validate_instance_extension_services(
         mh_snapshot.host_snapshot.id,
         mh_snapshot.host_snapshot.config.dpf.used_for_ingestion,
         &new_extension_services_config,
-        services,
+        &services,
+        &versions,
+        &existing_active_service_ids,
     )?;
 
-    // Persist the extension services config.
     db::instance::update_extension_services_config(
         txn,
         instance.id,

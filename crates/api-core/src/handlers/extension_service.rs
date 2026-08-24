@@ -724,11 +724,11 @@ async fn delete_kubernetes_pod(
         .into());
     }
 
-    // Instance attach/detach takes the same service lock, so this check and
-    // the following deletion operate on a stable attachment view.
-    if extension_service::is_service_in_use(txn, service_id, versions, false).await? {
+    // A soft-deleted, terminating instance counts as in use.
+    if extension_service::is_service_in_use(txn, service_id, versions, true).await? {
         return Err(CarbideError::FailedPrecondition(
-            "one or more extension service version is in use by instances; detach before deleting"
+            "one or more extension service version is in use by instances; detach it, or wait for \
+             instance deletion to complete, before deleting"
                 .into(),
         )
         .into());

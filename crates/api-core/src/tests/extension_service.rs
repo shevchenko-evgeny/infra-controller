@@ -505,16 +505,17 @@ async fn test_dpf_helm_chart_update_replaces_v1_and_requests_reconciliation(
     let service_id = ExtensionServiceId::new();
     let initial_data =
         model::extension_service::DpfHelmChartServiceData::parse(TEST_DPF_HELM_CHART_SERVICE_DATA)?;
-    let initial_projection =
-        project_dpu_service(service_id, carbide_dpf::NAMESPACE, &initial_data).service;
+    let initial_projection = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &initial_data);
     let updated_data = model::extension_service::DpfHelmChartServiceData::parse(
         TEST_DPF_HELM_CHART_SERVICE_DATA_VERSION_2,
     )?;
-    let updated_projection =
-        project_dpu_service(service_id, carbide_dpf::NAMESPACE, &updated_data).service;
+    let updated_projection = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &updated_data);
     let existing = dpu_service_observation(&initial_projection);
     let expected_name = updated_projection.name.clone();
-    let expected_patch = dpu_service_mutable_patch(&updated_projection);
+    let expected_patch = dpu_service_mutable_patch(
+        &updated_projection,
+        initial_projection.helm_chart.values.as_ref(),
+    );
 
     let mut mock = MockDpfOperations::new();
     mock.expect_create_dpu_service()
@@ -691,7 +692,7 @@ async fn test_dpf_helm_chart_delete_waits_for_dpf_finalization(
     let service_id = ExtensionServiceId::new();
     let data =
         model::extension_service::DpfHelmChartServiceData::parse(TEST_DPF_HELM_CHART_SERVICE_DATA)?;
-    let projected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data).service;
+    let projected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
     let expected_name = projected.name.clone();
     let existing = dpu_service_observation(&projected);
     let mut finalizing = existing.clone();
@@ -834,7 +835,7 @@ async fn test_dpf_helm_chart_delete_refuses_unowned_dpu_service(
     let service_id = ExtensionServiceId::new();
     let data =
         model::extension_service::DpfHelmChartServiceData::parse(TEST_DPF_HELM_CHART_SERVICE_DATA)?;
-    let projected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data).service;
+    let projected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
     let mut unowned = dpu_service_observation(&projected);
     unowned.labels.clear();
 
@@ -1270,7 +1271,7 @@ async fn test_dpf_helm_chart_create_reconciliation_accepts_owned_already_exists(
     let service_id = ExtensionServiceId::new();
     let data =
         model::extension_service::DpfHelmChartServiceData::parse(TEST_DPF_HELM_CHART_SERVICE_DATA)?;
-    let expected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data).service;
+    let expected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
     let expected_name = expected.name.clone();
     let expected_observation = dpu_service_observation(&expected);
 
@@ -1313,7 +1314,7 @@ async fn test_dpf_helm_chart_create_reconciliation_refuses_unowned_existing_serv
     let service_id = ExtensionServiceId::new();
     let data =
         model::extension_service::DpfHelmChartServiceData::parse(TEST_DPF_HELM_CHART_SERVICE_DATA)?;
-    let expected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data).service;
+    let expected = project_dpu_service(service_id, carbide_dpf::NAMESPACE, &data);
     let expected_name = expected.name.clone();
     let mut unowned = dpu_service_observation(&expected);
     unowned.labels.clear();
