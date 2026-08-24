@@ -250,6 +250,12 @@ message ComponentOperationStatus {
     repeated OperationType blocked_operations = 3;
 }
 
+// TaskSummary identifies non-terminal Tasks currently associated with an
+// inventory resource. IDs are ordered by Task creation time and then UUID.
+message TaskSummary {
+    repeated UUID active_task_ids = 1;  // Waiting, Pending, or Running Tasks; empty when none are active.
+}
+
 message Component {
     ComponentType type = 1;
     DeviceInfo info = 2;
@@ -262,6 +268,7 @@ message Component {
     ComponentOperationStatus status = 9;
     LeakStatus leak_status = 10;  // Coolant leak detection status (set by the leak-detection loop)
     UUID nvl_domain_id = 11;  // NVLink Domain containing this component's rack; omitted when unassigned
+    TaskSummary task_summary = 12;  // Active Tasks that explicitly target this component.
 }
 
 message Rack {
@@ -269,6 +276,7 @@ message Rack {
     Location location = 2;
     repeated Component components = 3;
     repeated UUID nvl_domain_ids = 4;  // NVLink Domains containing this rack; empty when unassigned
+    TaskSummary task_summary = 5;  // All active Tasks on this rack, including component-scoped Tasks.
 }
 
 message Identifier {

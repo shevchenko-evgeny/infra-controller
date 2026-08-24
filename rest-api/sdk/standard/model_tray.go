@@ -56,6 +56,7 @@ type Tray struct {
 	RackId *string `json:"rackId,omitempty"`
 	// ID of the NVLink Domain containing this Tray's Rack. Null when the Rack is not assigned to an NVLink Domain.
 	NvLinkDomainId NullableString `json:"nvLinkDomainId"`
+	TaskSummary    TaskSummary    `json:"taskSummary"`
 }
 
 type _Tray Tray
@@ -64,9 +65,10 @@ type _Tray Tray
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewTray(nvLinkDomainId NullableString) *Tray {
+func NewTray(nvLinkDomainId NullableString, taskSummary TaskSummary) *Tray {
 	this := Tray{}
 	this.NvLinkDomainId = nvLinkDomainId
+	this.TaskSummary = taskSummary
 	return &this
 }
 
@@ -584,6 +586,30 @@ func (o *Tray) SetNvLinkDomainId(v string) {
 	o.NvLinkDomainId.Set(&v)
 }
 
+// GetTaskSummary returns the TaskSummary field value
+func (o *Tray) GetTaskSummary() TaskSummary {
+	if o == nil {
+		var ret TaskSummary
+		return ret
+	}
+
+	return o.TaskSummary
+}
+
+// GetTaskSummaryOk returns a tuple with the TaskSummary field value
+// and a boolean to check if the value has been set.
+func (o *Tray) GetTaskSummaryOk() (*TaskSummary, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.TaskSummary, true
+}
+
+// SetTaskSummary sets field value
+func (o *Tray) SetTaskSummary(v TaskSummary) {
+	o.TaskSummary = v
+}
+
 func (o Tray) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -640,6 +666,7 @@ func (o Tray) ToMap() (map[string]interface{}, error) {
 		toSerialize["rackId"] = o.RackId
 	}
 	toSerialize["nvLinkDomainId"] = o.NvLinkDomainId.Get()
+	toSerialize["taskSummary"] = o.TaskSummary
 	return toSerialize, nil
 }
 
@@ -649,6 +676,7 @@ func (o *Tray) UnmarshalJSON(data []byte) (err error) {
 	// that every required field exists as a key in the generic map.
 	requiredProperties := []string{
 		"nvLinkDomainId",
+		"taskSummary",
 	}
 
 	allProperties := make(map[string]interface{})

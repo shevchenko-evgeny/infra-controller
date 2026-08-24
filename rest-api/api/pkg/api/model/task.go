@@ -24,6 +24,27 @@ var ProtoToAPITaskStatusName = map[flowv1.TaskStatus]string{
 	flowv1.TaskStatus_TASK_STATUS_WAITING:    "Waiting",
 }
 
+// APITaskSummary identifies non-terminal tasks currently associated with an
+// inventory resource. ActiveTaskIDs is always serialized, including when empty.
+type APITaskSummary struct {
+	ActiveTaskIDs []string `json:"activeTaskIds"`
+}
+
+// NewAPITaskSummary converts Flow's task summary while preserving an empty
+// array for resources that have no active tasks.
+func NewAPITaskSummary(summary *flowv1.TaskSummary) APITaskSummary {
+	result := APITaskSummary{ActiveTaskIDs: []string{}}
+	if summary == nil {
+		return result
+	}
+	for _, id := range summary.GetActiveTaskIds() {
+		if id != nil {
+			result.ActiveTaskIDs = append(result.ActiveTaskIDs, id.GetId())
+		}
+	}
+	return result
+}
+
 // APITask is the API response model for a Flow-scheduled task
 // (OpenAPI schema Task). It covers both rack- and tray-scoped tasks
 // because Flow drives them through the same Task entity.

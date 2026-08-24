@@ -687,6 +687,7 @@ type APITray struct {
 	BMCs            []*APIBMC        `json:"bmcs"`
 	RackID          string           `json:"rackId"`
 	NVLinkDomainID  *string          `json:"nvLinkDomainId"`
+	TaskSummary     APITaskSummary   `json:"taskSummary"`
 }
 
 // FromProto converts an Flow protobuf Component to an APITray
@@ -701,6 +702,7 @@ func (at *APITray) FromProto(comp *flowv1.Component) {
 	at.OperationStatus = enumOr(ProtoToAPIPhaseName, comp.GetStatus().GetPhase(), "Unknown")
 	at.LeakStatus = enumOr(ProtoToAPILeakStatusName, comp.GetLeakStatus(), "Unknown")
 	at.ComponentID = comp.GetComponentId()
+	at.TaskSummary = NewAPITaskSummary(comp.GetTaskSummary())
 
 	// Get info from DeviceInfo
 	if comp.GetInfo() != nil {

@@ -41,7 +41,8 @@ type Rack struct {
 	// Physical or logical location of the Rack
 	Location *RackLocation `json:"location,omitempty"`
 	// Components within the Rack. Only returned when includeComponents is true.
-	Components []RackComponent `json:"components,omitempty"`
+	Components  []RackComponent `json:"components,omitempty"`
+	TaskSummary TaskSummary     `json:"taskSummary"`
 }
 
 type _Rack Rack
@@ -50,9 +51,10 @@ type _Rack Rack
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewRack(nvLinkDomainIds []string) *Rack {
+func NewRack(nvLinkDomainIds []string, taskSummary TaskSummary) *Rack {
 	this := Rack{}
 	this.NvLinkDomainIds = nvLinkDomainIds
+	this.TaskSummary = taskSummary
 	return &this
 }
 
@@ -344,6 +346,30 @@ func (o *Rack) SetComponents(v []RackComponent) {
 	o.Components = v
 }
 
+// GetTaskSummary returns the TaskSummary field value
+func (o *Rack) GetTaskSummary() TaskSummary {
+	if o == nil {
+		var ret TaskSummary
+		return ret
+	}
+
+	return o.TaskSummary
+}
+
+// GetTaskSummaryOk returns a tuple with the TaskSummary field value
+// and a boolean to check if the value has been set.
+func (o *Rack) GetTaskSummaryOk() (*TaskSummary, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.TaskSummary, true
+}
+
+// SetTaskSummary sets field value
+func (o *Rack) SetTaskSummary(v TaskSummary) {
+	o.TaskSummary = v
+}
+
 func (o Rack) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -379,6 +405,7 @@ func (o Rack) ToMap() (map[string]interface{}, error) {
 	if !IsNil(o.Components) {
 		toSerialize["components"] = o.Components
 	}
+	toSerialize["taskSummary"] = o.TaskSummary
 	return toSerialize, nil
 }
 
@@ -388,6 +415,7 @@ func (o *Rack) UnmarshalJSON(data []byte) (err error) {
 	// that every required field exists as a key in the generic map.
 	requiredProperties := []string{
 		"nvLinkDomainIds",
+		"taskSummary",
 	}
 
 	allProperties := make(map[string]interface{})

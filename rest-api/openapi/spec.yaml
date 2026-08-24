@@ -10863,6 +10863,8 @@ paths:
                       description: Primary compute rack
                       nvLinkDomainIds:
                         - 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+                      taskSummary:
+                        activeTaskIds: []
                       location:
                         region: us-east-1
                         datacenter: DC-01
@@ -10949,6 +10951,8 @@ paths:
                     description: Primary compute rack
                     nvLinkDomainIds:
                       - 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+                    taskSummary:
+                      activeTaskIds: []
                     location:
                       region: us-east-1
                       datacenter: DC-01
@@ -12891,6 +12895,8 @@ paths:
                         hostId: 1
                       rackId: 550e8400-e29b-41d4-a716-446655440000
                       nvLinkDomainId: 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+                      taskSummary:
+                        activeTaskIds: []
           headers:
             X-Pagination:
               schema:
@@ -12959,6 +12965,8 @@ paths:
                       hostId: 1
                     rackId: 550e8400-e29b-41d4-a716-446655440000
                     nvLinkDomainId: 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+                    taskSummary:
+                      activeTaskIds: []
         '403':
           $ref: '#/components/responses/ForbiddenError'
         '404':
@@ -22307,6 +22315,7 @@ components:
       description: Rack represents a physical rack in the datacenter
       required:
         - nvLinkDomainIds
+        - taskSummary
       examples:
         - id: 550e8400-e29b-41d4-a716-446655440000
           name: Rack-01
@@ -22316,6 +22325,8 @@ components:
           description: Primary compute rack
           nvLinkDomainIds:
             - 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+          taskSummary:
+            activeTaskIds: []
           location:
             region: us-east-1
             datacenter: DC-01
@@ -22371,6 +22382,8 @@ components:
           description: Components within the Rack. Only returned when includeComponents is true.
           items:
             $ref: '#/components/schemas/RackComponent'
+        taskSummary:
+          $ref: '#/components/schemas/TaskSummary'
     RackLocation:
       title: RackLocation
       type: object
@@ -22557,6 +22570,7 @@ components:
       description: 'Tray represents a component within a rack (e.g. compute node, NVSwitch, power shelf)'
       required:
         - nvLinkDomainId
+        - taskSummary
       examples:
         - id: 660e8400-e29b-41d4-a716-446655440001
           componentId: fm100ht4v4mce2qstjnl8970nnj3ie6ecek4mtjn27pea4kre5gsa49jg0g
@@ -22578,6 +22592,9 @@ components:
               ipAddress: 192.168.1.100
           rackId: 550e8400-e29b-41d4-a716-446655440000
           nvLinkDomainId: 59202b81-65fb-45ec-b3b8-91ab0ad3f34a
+          taskSummary:
+            activeTaskIds:
+              - 7c9e6679-7425-40de-944b-e07fc1f90ae7
       properties:
         id:
           type: string
@@ -22649,6 +22666,8 @@ components:
             - 'null'
           format: uuid
           description: ID of the NVLink Domain containing this Tray's Rack. Null when the Rack is not assigned to an NVLink Domain.
+        taskSummary:
+          $ref: '#/components/schemas/TaskSummary'
     TrayPosition:
       title: TrayPosition
       type: object
@@ -22999,6 +23018,23 @@ components:
                   - componentType: PowerShelf
                     status: skipped
                     totalComponents: 0
+    TaskSummary:
+      title: TaskSummary
+      type: object
+      description: Non-terminal tasks currently associated with a rack or tray.
+      required:
+        - activeTaskIds
+      properties:
+        activeTaskIds:
+          type: array
+          description: |-
+            IDs of tasks in Waiting, Pending, or Running state, ordered by
+            creation time and then task ID. Empty when no task is active. Rack
+            summaries include component-scoped tasks on the rack; tray summaries
+            include only tasks that explicitly target the tray.
+          items:
+            type: string
+            format: uuid
     OperationRule:
       title: OperationRule
       type: object

@@ -257,6 +257,7 @@ type APIRack struct {
 	NVLinkDomainIDs []string            `json:"nvLinkDomainIds"`
 	Location        *APIRackLocation    `json:"location,omitempty"`
 	Components      []*APIRackComponent `json:"components,omitempty"`
+	TaskSummary     APITaskSummary      `json:"taskSummary"`
 }
 
 // FromProto converts an Flow protobuf Rack to an APIRack
@@ -287,6 +288,7 @@ func (ar *APIRack) FromProto(protoRack *flowv1.Rack, includeComponents bool) {
 			ar.NVLinkDomainIDs = append(ar.NVLinkDomainIDs, domainID.GetId())
 		}
 	}
+	ar.TaskSummary = NewAPITaskSummary(protoRack.GetTaskSummary())
 
 	// Get location
 	if protoRack.GetLocation() != nil {

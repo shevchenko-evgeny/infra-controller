@@ -16,6 +16,34 @@ import (
 	"github.com/NVIDIA/infra-controller/rest-api/api/pkg/api/pagination"
 )
 
+func TestNewAPITaskSummary(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary *flowv1.TaskSummary
+		want    []string
+	}{
+		{
+			name: "nil summary returns empty IDs",
+			want: []string{},
+		},
+		{
+			name: "preserves ordered non-nil IDs",
+			summary: &flowv1.TaskSummary{ActiveTaskIds: []*flowv1.UUID{
+				{Id: "task-1"},
+				nil,
+				{Id: "task-2"},
+			}},
+			want: []string{"task-1", "task-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, NewAPITaskSummary(tt.summary).ActiveTaskIDs)
+		})
+	}
+}
+
 func TestNewAPITask(t *testing.T) {
 	tests := []struct {
 		name     string
