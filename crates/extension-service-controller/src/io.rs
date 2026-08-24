@@ -95,7 +95,7 @@ impl StateControllerIO for ExtensionServiceStateControllerIO {
         new_version: ConfigVersion,
         new_state: &Self::ControllerState,
     ) -> Result<bool, DatabaseError> {
-        db::extension_service::try_update_dpf_helm_chart_controller_state(
+        db::extension_service::try_update_controller_state(
             txn,
             *service_id,
             old_version,
@@ -129,12 +129,7 @@ impl StateControllerIO for ExtensionServiceStateControllerIO {
         service_id: &Self::ObjectId,
         outcome: PersistentStateHandlerOutcome,
     ) -> Result<(), DatabaseError> {
-        db::extension_service::update_dpf_helm_chart_controller_state_outcome(
-            txn,
-            *service_id,
-            outcome,
-        )
-        .await
+        db::extension_service::update_controller_state_outcome(txn, *service_id, outcome).await
     }
 
     fn metric_state_names(state: &ExtensionServiceLifecycleState) -> (&'static str, &'static str) {
@@ -153,8 +148,7 @@ impl StateControllerIO for ExtensionServiceStateControllerIO {
         _state: &Versioned<Self::ControllerState>,
         _object_state: &Self::State,
     ) -> StateSla {
-        // The shell has no DPF reconciliation deadline, so it must not
-        // manufacture SLA failures while mutation components are absent.
+        // @TODO(Felicity): Add SLA.
         StateSla::no_sla()
     }
 }

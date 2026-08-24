@@ -1429,13 +1429,12 @@ pub(crate) fn validate_instance_extension_services(
     dpf_enabled: bool,
     existing_active_service_ids: &HashSet<carbide_uuid::extension_service::ExtensionServiceId>,
 ) -> Result<(), CarbideError> {
-    let service_ids: Vec<_> = extension_services
+    let unique_service_ids: HashSet<_> = extension_services
         .service_configs
         .iter()
         .map(|service| service.service_id)
         .collect();
-    let unique_service_ids: HashSet<_> = service_ids.iter().collect();
-    if service_ids.len() != unique_service_ids.len() {
+    if unique_service_ids.len() != extension_services.service_configs.len() {
         return Err(CarbideError::InvalidArgument(
             "duplicate extension services in configuration. only one version of each service is allowed"
                 .to_string(),
@@ -1446,37 +1445,19 @@ pub(crate) fn validate_instance_extension_services(
     let mut has_kubernetes_pod = false;
 
     for config in &extension_services.service_configs {
-        let Some(service) = services.get(&config.service_id) else {
-            return Err(CarbideError::FailedPrecondition(format!(
-                "extension service {} does not exist",
-                config.service_id,
-            )));
-        };
-        if service.deleted.is_some() {
-            return Err(CarbideError::FailedPrecondition(format!(
-                "extension service {} does not exist",
-                config.service_id,
-            )));
-        }
+        let service = services
+            .get(&config.service_id)
+            .filter(|service| service.deleted.is_none())
+            .ok_or_else(|| {
+                CarbideError::FailedPrecondition(format!(
+                    "extension service {} does not exist",
+                    config.service_id,
+                ))
+            })?;
 
         match service.service_type {
             ExtensionServiceType::KubernetesPod => {
                 has_kubernetes_pod = true;
-                if config.version.version_nr() == 0 {
-                    return Err(CarbideError::FailedPrecondition(format!(
-                        "extension service {} version must not be empty for Kubernetes Pod services",
-                        config.service_id,
-                    )));
-                }
-                if !versions
-                    .get(&config.service_id)
-                    .is_some_and(|service_versions| service_versions.contains(&config.version))
-                {
-                    return Err(CarbideError::FailedPrecondition(format!(
-                        "extension service {} version {} does not exist or is deleted",
-                        config.service_id, config.version,
-                    )));
-                }
             }
             ExtensionServiceType::DpfHelmChart => {
                 has_dpf_helm_chart = true;
@@ -1485,12 +1466,6 @@ pub(crate) fn validate_instance_extension_services(
                         "DPF Helm chart extension services require DPF to be enabled for this site"
                             .to_string(),
                     ));
-                }
-                if config.version.version_nr() != 1 {
-                    return Err(CarbideError::InvalidArgument(format!(
-                        "DPF Helm chart extension service {} must use V1",
-                        config.service_id,
-                    )));
                 }
 
                 if !existing_active_service_ids.contains(&config.service_id)
@@ -1502,17 +1477,17 @@ pub(crate) fn validate_instance_extension_services(
                         config.service_id, service.status.controller_state.value,
                     )));
                 }
-
-                if !versions
-                    .get(&config.service_id)
-                    .is_some_and(|service_versions| service_versions.contains(&config.version))
-                {
-                    return Err(CarbideError::FailedPrecondition(format!(
-                        "DPF Helm chart extension service {} version {} does not exist or is deleted",
-                        config.service_id, config.version,
-                    )));
-                }
             }
+        }
+
+        if !versions
+            .get(&config.service_id)
+            .is_some_and(|service_versions| service_versions.contains(&config.version))
+        {
+            return Err(CarbideError::FailedPrecondition(format!(
+                "extension service {} version {} does not exist or is deleted",
+                config.service_id, config.version,
+            )));
         }
     }
 

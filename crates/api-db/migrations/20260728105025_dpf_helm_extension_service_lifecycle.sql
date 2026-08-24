@@ -1,4 +1,4 @@
--- DPF Helm chart type extension services are reconciled asynchronously. 
+-- DPF Helm chart type extension services are reconciled asynchronously.
 -- Preserve their desired lifecycle separately from API-visible version_ctr so
 -- stale controller iterations cannot overwrite a newer request.
 ALTER TABLE extension_services
@@ -76,7 +76,7 @@ END;
 $$;
 
 CREATE TRIGGER t_extension_service_state_history_keep_limit
-AFTER INSERT ON extension_service_state_history 
+AFTER INSERT ON extension_service_state_history
 FOR EACH ROW EXECUTE FUNCTION extension_service_state_history_keep_limit();
 
 INSERT INTO extension_service_state_history (object_id, state, state_version, "timestamp")

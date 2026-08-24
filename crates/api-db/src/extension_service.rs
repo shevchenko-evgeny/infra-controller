@@ -466,10 +466,10 @@ pub async fn request_dpf_helm_chart_deletion(
     Ok(())
 }
 
-/// Compares and swaps the controller-owned lifecycle state for a DPF Helm
-/// chart service.  A `false` result means another writer won the race; it is
-/// not an error and must not be followed by a history write.
-pub async fn try_update_dpf_helm_chart_controller_state(
+/// Compares and swaps the controller-owned lifecycle state. A `false` result
+/// means another writer won the race; it is not an error and must not be
+/// followed by a history write.
+pub async fn try_update_controller_state(
     txn: &mut PgConnection,
     service_id: ExtensionServiceId,
     expected_version: ConfigVersion,
@@ -479,14 +479,12 @@ pub async fn try_update_dpf_helm_chart_controller_state(
     let query = "UPDATE extension_services
                  SET controller_state_version = $1, controller_state = $2::jsonb
                  WHERE id = $3
-                   AND type = $4
-                   AND controller_state_version = $5
+                   AND controller_state_version = $4
                  RETURNING id";
     let updated = sqlx::query_scalar::<_, ExtensionServiceId>(query)
         .bind(new_version)
         .bind(sqlx::types::Json(new_state))
         .bind(service_id)
-        .bind(ExtensionServiceType::DpfHelmChart.to_string())
         .bind(expected_version)
         .fetch_optional(txn)
         .await
@@ -497,18 +495,17 @@ pub async fn try_update_dpf_helm_chart_controller_state(
 
 /// Stores the most recent safe controller diagnostic without changing desired
 /// lifecycle state or its optimistic-concurrency version.
-pub async fn update_dpf_helm_chart_controller_state_outcome(
+pub async fn update_controller_state_outcome(
     txn: &mut PgConnection,
     service_id: ExtensionServiceId,
     outcome: PersistentStateHandlerOutcome,
 ) -> DatabaseResult<()> {
     let query = "UPDATE extension_services
                  SET controller_state_outcome = $1::jsonb
-                 WHERE id = $2 AND type = $3";
+                 WHERE id = $2";
     sqlx::query(query)
         .bind(sqlx::types::Json(outcome))
         .bind(service_id)
-        .bind(ExtensionServiceType::DpfHelmChart.to_string())
         .execute(txn)
         .await
         .map_err(|e| DatabaseError::query(query, e))?;
@@ -1153,7 +1150,7 @@ mod test_batched_lookups {
 
         let active_version = creating.status.controller_state.version.increment();
         assert!(
-            try_update_dpf_helm_chart_controller_state(
+            try_update_controller_state(
                 &mut txn,
                 service_id,
                 creating.status.controller_state.version,
@@ -1173,7 +1170,7 @@ mod test_batched_lookups {
         .await
         .expect("persist state history");
         assert!(
-            !try_update_dpf_helm_chart_controller_state(
+            !try_update_controller_state(
                 &mut txn,
                 service_id,
                 creating.status.controller_state.version,
@@ -1185,7 +1182,7 @@ mod test_batched_lookups {
         );
 
         let outcome = PersistentStateHandlerOutcome::DoNothing { source_ref: None };
-        update_dpf_helm_chart_controller_state_outcome(&mut txn, service_id, outcome.clone())
+        update_controller_state_outcome(&mut txn, service_id, outcome.clone())
             .await
             .expect("persist controller outcome");
         soft_delete_service(&mut txn, service_id)

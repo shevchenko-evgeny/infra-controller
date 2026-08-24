@@ -240,7 +240,7 @@ async fn reconcile_update(
     match dpf_sdk
         .patch_dpu_service(
             &service.name,
-            dpu_service_mutable_patch(&service),
+            dpu_service_mutable_patch(&service, existing.helm_chart.values.as_ref()),
         )
         .await
     {

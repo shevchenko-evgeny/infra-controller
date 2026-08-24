@@ -60,10 +60,18 @@ pub fn project_dpu_service(
 /// absent: they must be validated before applying this patch, never repaired
 /// or overwritten.
 ///
-/// An absent `values` is represented by `null` in the patch so a previously
-/// stored values object is removed.  The full projected CR, by contrast,
-/// serializes absent values by omitting that field.
-pub fn dpu_service_mutable_patch(projected: &DetachedDpuServiceDefinition) -> Value {
+/// `existing_values` is used to make the `values` field a complete replacement
+/// despite JSON Merge Patch's recursive object-merge behavior. Any key absent
+/// from the desired values is emitted as `null`, recursively removing it from
+/// the live DPUService.
+///
+/// An absent desired `values` is represented by `null` so the entire stored
+/// values object is removed. The full projected CR, by contrast, serializes
+/// absent values by omitting that field.
+pub fn dpu_service_mutable_patch(
+    projected: &DetachedDpuServiceDefinition,
+    existing_values: Option<&BTreeMap<String, Value>>,
+) -> Value {
     let helm_chart = &projected.helm_chart;
     let mut helm_chart_patch = Map::from_iter([(
         "source".to_owned(),
@@ -75,10 +83,12 @@ pub fn dpu_service_mutable_patch(projected: &DetachedDpuServiceDefinition) -> Va
     )]);
     helm_chart_patch.insert(
         "values".to_owned(),
-        helm_chart
-            .values
-            .as_ref()
-            .map_or(Value::Null, |values| json!(values)),
+        helm_chart.values.as_ref().map_or(Value::Null, |values| {
+            Value::Object(values_replacement_merge_patch(
+                &json_object(values),
+                &existing_values.map(json_object).unwrap_or_default(),
+            ))
+        }),
     );
 
     json!({
@@ -87,6 +97,38 @@ pub fn dpu_service_mutable_patch(projected: &DetachedDpuServiceDefinition) -> Va
             "security": {"privileged": projected.security_privileged},
         },
     })
+}
+
+fn values_replacement_merge_patch(
+    desired: &Map<String, Value>,
+    existing: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut patch = Map::new();
+
+    for (key, desired_value) in desired {
+        let patch_value = match (desired_value, existing.get(key)) {
+            (Value::Object(desired), Some(Value::Object(existing))) => {
+                Value::Object(values_replacement_merge_patch(desired, existing))
+            }
+            _ => desired_value.clone(),
+        };
+        patch.insert(key.clone(), patch_value);
+    }
+
+    for key in existing.keys().filter(|key| !desired.contains_key(*key)) {
+        patch.insert(key.clone(), Value::Null);
+    }
+
+    patch
+}
+
+/// Converts the SDK's ordered value map to the representation used inside a
+/// `serde_json` document, so the patch builder descends through one map type.
+fn json_object(values: &BTreeMap<String, Value>) -> Map<String, Value> {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 /// Validates that a live DPUService is the object NICo is allowed to manage.
@@ -152,7 +194,7 @@ pub fn verify_dpu_service_owner_label(
 
 /// A non-sensitive reason that NICo must neither patch nor delete a live
 /// DPUService.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DpuServiceOwnershipConflict {
     #[error("DPUService ownership label does not identify this extension service")]
     OwnershipLabel,
@@ -312,7 +354,7 @@ mod tests {
     #[test]
     fn mutable_patch_has_no_identity_or_attachment_fields() {
         let projected = project_dpu_service(service_id(), NAMESPACE, &data(None));
-        let patch = dpu_service_mutable_patch(&projected);
+        let patch = dpu_service_mutable_patch(&projected, None);
 
         assert_eq!(patch["spec"]["helmChart"]["values"], Value::Null);
         assert!(patch["metadata"].is_null());
@@ -327,6 +369,50 @@ mod tests {
                 .get("releaseName")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn mutable_patch_removes_values_omitted_from_the_desired_replacement() {
+        let existing_values = BTreeMap::from_iter([
+            ("replicas".to_owned(), json!(2)),
+            ("debug".to_owned(), json!(true)),
+            (
+                "image".to_owned(),
+                json!({"tag": "1.0.0", "repository": "registry.example.com/old"}),
+            ),
+        ]);
+        let projected = project_dpu_service(
+            service_id(),
+            NAMESPACE,
+            &data(Some(Map::from_iter([
+                ("replicas".to_owned(), json!(3)),
+                ("image".to_owned(), json!({"tag": "2.0.0"})),
+            ]))),
+        );
+
+        let patch = dpu_service_mutable_patch(&projected, Some(&existing_values));
+
+        assert_eq!(
+            patch["spec"]["helmChart"]["values"],
+            json!({
+                "replicas": 3,
+                "debug": null,
+                "image": {
+                    "tag": "2.0.0",
+                    "repository": null,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn mutable_patch_replaces_an_existing_values_object_with_an_empty_one() {
+        let projected = project_dpu_service(service_id(), NAMESPACE, &data(Some(Map::new())));
+        let existing_values = BTreeMap::from_iter([("debug".to_owned(), json!(true))]);
+
+        let patch = dpu_service_mutable_patch(&projected, Some(&existing_values));
+
+        assert_eq!(patch["spec"]["helmChart"]["values"], json!({"debug": null}));
     }
 
     #[test]
